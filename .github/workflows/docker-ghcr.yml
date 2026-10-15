@@ -14,20 +14,25 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: docker-ghcr-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  IMAGE_NAME: ghcr.io/harry0703/moneyprinterturbo
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/moneyprinterturbo
 
 jobs:
   publish:
     name: Build and publish
+    # Keep upstream publishing unchanged, but require an explicit repository
+    # variable opt-in before a fork can publish its own package.
+    if: github.repository == 'harry0703/MoneyPrinterTurbo' || vars.ENABLE_CONTAINER_PUBLISH == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Check out repository

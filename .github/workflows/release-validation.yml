@@ -1,0 +1,59 @@
+name: Release validation
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out release candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require current main and successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Manual release validation must run from main."
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$GITHUB_SHA" != "$main_sha" ]; then
+            echo "Release candidate is not the current main commit; validate the latest main before tagging."
+            exit 1
+          fi
+
+          runs="$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --status success --limit 100 --json conclusion,event,headSha)"
+          if ! jq -e --arg sha "$GITHUB_SHA" 'any(.[]; .headSha == $sha and .conclusion == "success" and .event == "push")' <<< "$runs" >/dev/null; then
+            echo "No successful CI push run was found for this exact commit. Release validation stopped."
+            exit 1
+          fi
+
+          {
+            echo "## Release candidate validation"
+            echo "- Candidate SHA: `$GITHUB_SHA`"
+            echo "- Current `main`: `$main_sha`"
+            echo "- CI: successful push run found for this exact commit."
+            echo "- Publishing or deployment: none."
+          } >> "$GITHUB_STEP_SUMMARY"
