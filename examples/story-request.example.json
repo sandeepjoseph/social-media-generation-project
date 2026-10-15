@@ -1,0 +1,15 @@
+{
+  "title": "A Promise at Sunrise",
+  "premise": "Write an original children's story about a young gardener who learns to ask neighbors for help after a storm.",
+  "audience": {
+    "age_min": 6,
+    "age_max": 10,
+    "language": "en"
+  },
+  "fiction_taxonomy": "fiction",
+  "moral_or_learning_intent": "Cooperation can help a community recover.",
+  "claims_to_verify": [],
+  "target_duration_seconds": 420,
+  "platform_targets": ["youtube_long", "youtube_short", "facebook_reels", "instagram_reels", "tiktok", "dailymotion", "rumble"],
+  "duration_policy": "new_story_target"
+}

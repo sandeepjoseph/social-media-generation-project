@@ -1895,11 +1895,19 @@ def render_image_zoom_video(image_path: str, clip_duration: int = 5) -> str:
     try:
         # Apply a zoom effect using the resize method.
         # A lambda function is used to make the zoom effect dynamic over time.
-        # The zoom effect starts from the original size and gradually scales up to 120%.
+        # The zoom effect starts from the original size and stays within the configured cap.
         # t represents the current time, and clip.duration is the total duration of the clip.
         # Note: 1 represents 100% size, so 1.2 represents 120%.
+        default_zoom_ratio = clip_duration * 0.03
+        try:
+            zoom_ratio = float(config.app.get("image_zoom_ratio", default_zoom_ratio))
+        except (TypeError, ValueError):
+            zoom_ratio = default_zoom_ratio
+        if not math.isfinite(zoom_ratio):
+            zoom_ratio = default_zoom_ratio
+        zoom_ratio = max(0.0, min(zoom_ratio, 0.5))
         zoom_clip = clip.resized(
-            lambda t: 1 + (clip_duration * 0.03) * (t / clip.duration)
+            lambda t: 1 + zoom_ratio * (t / clip.duration)
         )
 
         # Optionally, create a composite video clip containing the zoomed clip.
@@ -1916,7 +1924,9 @@ def render_image_zoom_video(image_path: str, clip_duration: int = 5) -> str:
             if clip.mask is not None:
                 source_digest.update(clip.mask.get_frame(0).tobytes())
             source_identity = source_digest.hexdigest()
-            duration_identity = hashlib.sha256(str(clip_duration).encode()).hexdigest()[:16]
+            duration_identity = hashlib.sha256(
+                f"{clip_duration}:{zoom_ratio}".encode()
+            ).hexdigest()[:16]
             video_file = os.path.join(
                 os.path.dirname(image_path), f"{source_identity}.zoom-{duration_identity}.mp4"
             )

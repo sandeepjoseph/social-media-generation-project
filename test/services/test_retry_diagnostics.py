@@ -45,10 +45,11 @@ def test_new_attempt_clears_diagnostics_before_generating_any_output():
     )
     from app.models.schema import VideoParams
 
-    def generate(task_id, params):
+    def generate(task_id, params, cost_context=None):
         task = state.get_task(task_id)
         assert task.get("error") is None
         assert task.get("failed_stage") is None
+        assert cost_context["_cost_router_job_id"] == task_id
         return "New narration"
 
     with (

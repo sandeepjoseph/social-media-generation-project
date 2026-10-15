@@ -45,3 +45,10 @@ htmlcov/
 
 # Claude Code 订阅令牌（docker compose 自动读取），禁止提交
 .env
+
+# Local commercial settings and generated Studio state are never public source.
+/cost-router-overrides.json
+/private-config/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

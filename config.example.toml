@@ -319,6 +319,7 @@ openai_model_name = ""
 anthropic_api_key = ""
 anthropic_base_url = ""
 anthropic_model_name = ""
+anthropic_workspace_id = ""
 
 # Google Gemini
 # API key: https://aistudio.google.com/app/apikey

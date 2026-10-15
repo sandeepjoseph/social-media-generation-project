@@ -56,6 +56,7 @@ class TestOpenAIImageProvider(unittest.TestCase):
         # 本地 config.toml 里的设置影响默认行为场景的断言。
         config.app.pop("openai_image_prompt_template", None)
         config.app.pop("openai_image_size", None)
+        config.app.pop("openai_image_quality", None)
         config.app.pop("tls_verify", None)
         config.proxy.clear()
 
@@ -135,6 +136,22 @@ class TestOpenAIImageProvider(unittest.TestCase):
             {"id": None, "width": 736, "height": 1312},
         )
         self.assertEqual(item.source_info["search_term"], "sunrise over mountains")
+
+    def test_generate_images_openai_includes_configured_quality(self):
+        config.app["openai_image_quality"] = "high"
+        response = _image_response(
+            {"data": [{"b64_json": base64.b64encode(_png_bytes()).decode("ascii")}]}
+        )
+
+        with patch(
+            "app.services.material.requests.post", return_value=response
+        ) as post:
+            results = material.generate_images_openai(
+                "misty forest", minimum_duration=5, save_dir=self.save_dir
+            )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(post.call_args.kwargs["json"]["quality"], "high")
 
     def test_generate_images_openai_with_url_response(self):
         """url 响应必须立即下载临时地址并落盘。"""
