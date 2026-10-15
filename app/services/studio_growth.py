@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Sequence
@@ -77,7 +78,20 @@ _TREND_WORDS = {
     "like",
     "subscribe",
 }
-_VALID_RIGHTS = {"original", "licensed", "public_domain", "cleared"}
+_VALID_RIGHTS = {"original", "licensed", "public_domain", "cleared", "not_used"}
+_RIGHTS_CATEGORIES = {
+    "source": {
+        "source",
+        "source_script_adaptation",
+        "source_adaptation",
+        "script",
+        "story",
+        "adaptation",
+    },
+    "visual": {"visual", "image", "video", "character_art"},
+    "voice": {"voice", "narration", "dialogue"},
+    "music_ambience": {"music_ambience", "music", "ambience", "sound", "sfx"},
+}
 _PLATFORM_STRATEGY = {
     "youtube_long": "Use a truthful title and thumbnail that match the story; include chapters only when timings are verified.",
     "youtube_short": "Keep the story premise legible in the opening and ensure the title describes the actual Short.",
@@ -113,14 +127,42 @@ def _normal_topics(facts: dict[str, Any]) -> list[str]:
         ]
     else:
         taxonomy_items = _items(taxonomy)
-    return _items(
-        [
-            *_items(facts.get("topics")),
-            *_items(facts.get("keywords")),
-            *taxonomy_items,
-            _text(facts.get("moral_or_learning_intent")),
-        ]
-    )
+    script_context = " ".join(
+        _text(facts.get(field))
+        for field in (
+            "title",
+            "script_text",
+            "synopsis",
+            "story_summary",
+            "moral_or_learning_intent",
+        )
+    ).casefold()
+    candidates = [*_items(facts.get("topics")), *_items(facts.get("keywords"))]
+    taxonomy_norm = {_normalize_words(value) for value in taxonomy_items}
+    candidates.extend(taxonomy_items)
+    candidates.append(_text(facts.get("moral_or_learning_intent")))
+    accepted: list[str] = []
+    for candidate in _items(candidates):
+        words = _normalize_words(candidate)
+        if not words or len(candidate) > 80 or len(words) > 6:
+            continue
+        if any(word in _TREND_WORDS for word in words):
+            continue
+        # Topic/keyword suggestions need at least one meaningful word supported
+        # by the story text; taxonomy values are structured project facts.
+        if _normalize_words(candidate) not in taxonomy_norm and not any(
+            len(word) >= 3 and re.search(rf"\b{re.escape(word)}\b", script_context)
+            for word in words
+        ):
+            continue
+        accepted.append(candidate)
+        if len(accepted) >= 10:
+            break
+    return accepted
+
+
+def _normalize_words(value: str) -> tuple[str, ...]:
+    return tuple(word for word in _HASHTAG_WORDS.split(value.casefold()) if word)
 
 
 def _hashtags(facts: dict[str, Any]) -> list[str]:
@@ -141,7 +183,10 @@ def _hashtags(facts: dict[str, Any]) -> list[str]:
     return result
 
 
-def _asset_status(asset: Any) -> dict[str, Any]:
+def _asset_status(
+    asset: Any,
+    verification_cache: dict[tuple[str, str, int, int, int], bool] | None = None,
+) -> dict[str, Any]:
     if not isinstance(asset, dict):
         return {"path": None, "sha256": None, "verified": False}
     path = _text(asset.get("path"))
@@ -149,16 +194,52 @@ def _asset_status(asset: Any) -> dict[str, Any]:
     if not path or not re.fullmatch(r"[a-f0-9]{64}", claimed):
         return {"path": path or None, "sha256": claimed or None, "verified": False}
     try:
-        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        media_path = Path(path)
+        stat_before = media_path.stat()
+        cache_key = (
+            str(media_path.resolve()),
+            claimed,
+            stat_before.st_ino,
+            stat_before.st_size,
+            stat_before.st_mtime_ns,
+        )
+        if verification_cache is not None and cache_key in verification_cache:
+            return {
+                "path": path,
+                "sha256": claimed,
+                "verified": verification_cache[cache_key],
+            }
+        digest_builder = hashlib.sha256()
+        with media_path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest_builder.update(chunk)
+        digest = digest_builder.hexdigest()
+        stat_after = media_path.stat()
+        if (stat_before.st_ino, stat_before.st_size, stat_before.st_mtime_ns) != (
+            stat_after.st_ino,
+            stat_after.st_size,
+            stat_after.st_mtime_ns,
+        ):
+            return {"path": path, "sha256": claimed, "verified": False}
     except OSError:
         return {"path": path, "sha256": claimed, "verified": False}
-    return {"path": path, "sha256": claimed, "verified": digest == claimed}
+    verified = digest == claimed
+    if verification_cache is not None:
+        verification_cache[cache_key] = verified
+    return {"path": path, "sha256": claimed, "verified": verified}
 
 
-def _rights_status(evidence: Any) -> tuple[bool, list[str]]:
+def _rights_status(evidence: Any) -> tuple[bool, list[str], dict[str, list[str]]]:
     queue: list[str] = []
+    coverage = {category: [] for category in _RIGHTS_CATEGORIES}
     if not isinstance(evidence, (list, dict)) or not evidence:
-        return False, ["Document source, copyright, and music rights evidence."]
+        return (
+            False,
+            [
+                "Document source/adaptation, visual, voice, and music/ambience rights evidence."
+            ],
+            coverage,
+        )
     entries = evidence.values() if isinstance(evidence, dict) else evidence
     found = False
     for entry in entries:
@@ -169,36 +250,132 @@ def _rights_status(evidence: Any) -> tuple[bool, list[str]]:
             continue
         found = True
         status = _text(entry.get("rights_status") or entry.get("status")).casefold()
+        category_value = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            _text(
+                entry.get("category") or entry.get("asset_type") or entry.get("type")
+            ).casefold(),
+        ).strip("_")
+        category = next(
+            (
+                name
+                for name, aliases in _RIGHTS_CATEGORIES.items()
+                if category_value in aliases
+            ),
+            None,
+        )
+        if category is None:
+            queue.append(
+                "Classify rights evidence as source/adaptation, visual, voice, or music/ambience."
+            )
+        else:
+            coverage[category].append(status)
         if status not in _VALID_RIGHTS:
             queue.append(
                 f"Resolve rights status for {_text(entry.get('source') or entry.get('label')) or 'an asset/source'}."
             )
+        if not _text(entry.get("source") or entry.get("label") or entry.get("summary")):
+            queue.append("Add a source or summary to each rights evidence entry.")
     if not found:
-        queue.append("Document source, copyright, and music rights evidence.")
-    return not queue, queue
+        queue.append(
+            "Document source/adaptation, visual, voice, and music/ambience rights evidence."
+        )
+    for category, statuses in coverage.items():
+        if not statuses:
+            queue.append(
+                f"Add a rights evidence entry for {category.replace('_', '/')} (use not_used only when explicitly applicable)."
+            )
+        elif any(status not in _VALID_RIGHTS for status in statuses):
+            continue
+    return not queue, queue, coverage
 
 
-def _qa_passed(report: Any) -> bool:
-    return isinstance(report, dict) and (
-        report.get("passed") is True
-        or str(report.get("status", "")).casefold() in {"passed", "pass", "approved"}
+def _qa_passed(
+    report: Any, story_id: str, script_sha256: str, master_sha256: str
+) -> bool:
+    if not isinstance(report, dict):
+        return False
+    passed = report.get("passed") is True or str(
+        report.get("status", "")
+    ).casefold() in {"passed", "pass", "approved"}
+    return bool(
+        passed
+        and report.get("story_id") == story_id
+        and report.get("script_sha256") == script_sha256
+        and report.get("master_sha256") == master_sha256
     )
 
 
-def _verified_chapters(facts: dict[str, Any]) -> list[dict[str, Any]]:
+def _verified_chapters(
+    facts: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
     chapters = facts.get("chapters")
     if not isinstance(chapters, list):
-        return []
+        return [], None
+    if not chapters:
+        return [], None
     verified: list[dict[str, Any]] = []
+    previous = -1.0
+    duration = facts.get("duration_seconds")
+    duration_verified = facts.get("duration_verified") is True
+    if duration is None and isinstance(facts.get("master"), dict):
+        duration = facts["master"].get("duration_seconds")
+        duration_verified = facts["master"].get("duration_verified") is True
+    if duration is not None and not duration_verified:
+        return (
+            [],
+            "Duration is not verified; chapter timings within the video need review.",
+        )
+    if duration is not None and (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
+        return [], "Duration is invalid; chapter timings need review."
     for chapter in chapters:
         if not isinstance(chapter, dict) or chapter.get("timing_verified") is not True:
-            return []
+            return [], "Chapter timings are not verified; chapters were omitted."
         seconds = chapter.get("seconds")
         title = _text(chapter.get("title"))
-        if not isinstance(seconds, (int, float)) or seconds < 0 or not title:
-            return []
-        verified.append({"seconds": int(seconds), "title": title})
-    return verified
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds < 0
+            or seconds <= previous
+            or not title
+            or (duration is not None and seconds >= duration)
+        ):
+            return (
+                [],
+                "Chapter timings must be finite, strictly increasing, unique, and within the verified duration.",
+            )
+        verified.append({"seconds": seconds, "title": title})
+        previous = seconds
+    return verified, None
+
+
+def _youtube_chapters(
+    chapters: list[dict[str, Any]], duration_seconds: int | float | None
+) -> tuple[list[dict[str, Any]], str | None]:
+    if not chapters:
+        return [], None
+    if duration_seconds is None:
+        return [], "YouTube chapter segment lengths need a verified video duration."
+    seconds = [item["seconds"] for item in chapters]
+    if (
+        seconds[0] != 0
+        or len(seconds) < 3
+        or any(right - left < 10 for left, right in zip(seconds, seconds[1:]))
+        or duration_seconds - seconds[-1] < 10
+    ):
+        return (
+            [],
+            "YouTube chapters need a 0:00 start, at least three entries, and at least 10 seconds per segment.",
+        )
+    return chapters, None
 
 
 def _description(facts: dict[str, Any], platform: str, hashtags: list[str]) -> str:
@@ -280,32 +457,41 @@ def package_story(
     """
     if not isinstance(story_facts, dict):
         raise TypeError("story_facts must be a dictionary")
+    selected_platforms = tuple(dict.fromkeys(platforms))
+    if not selected_platforms:
+        raise ValueError("At least one platform is required")
     story_id = _text(story_facts.get("story_id"))
     title = _text(story_facts.get("title"))
-    script = _text(story_facts.get("script_text"))
+    raw_script = story_facts.get("script_text")
+    script = _text(raw_script)
     if not story_id or not title or not script:
         raise ValueError("story_id, title, and script_text are required")
 
-    master = _asset_status(story_facts.get("master"))
-    captions = _asset_status(story_facts.get("captions"))
-    rights_ok, rights_queue = _rights_status(story_facts.get("source_evidence"))
-    qa_ok = _qa_passed(story_facts.get("qa_report"))
+    script_sha256 = hashlib.sha256(raw_script.encode("utf-8")).hexdigest()
+    asset_verification_cache: dict[tuple[str, str, int, int, int], bool] = {}
+    master = _asset_status(story_facts.get("master"), asset_verification_cache)
+    captions = _asset_status(story_facts.get("captions"), asset_verification_cache)
+    rights_ok, rights_queue, rights_coverage = _rights_status(
+        story_facts.get("source_evidence")
+    )
+    qa_ok = _qa_passed(
+        story_facts.get("qa_report"), story_id, script_sha256, master["sha256"] or ""
+    )
     audience = (
         story_facts.get("audience")
         if isinstance(story_facts.get("audience"), dict)
         else {}
     )
     made_for_kids = audience.get("made_for_kids")
-    if not isinstance(made_for_kids, bool):
+    audience_reviewed = audience.get("reviewed") is True and isinstance(
+        made_for_kids, bool
+    )
+    if not audience_reviewed:
         audience_queue = [
-            "Human review: determine the accurate made-for-kids audience setting."
+            "Human review: determine the accurate made-for-kids audience setting and record audience.reviewed=true."
         ]
     else:
         audience_queue = []
-    if made_for_kids is True:
-        audience_queue.append(
-            "Confirm child-directed platform settings and age-appropriate metadata."
-        )
 
     ai_status = story_facts.get("ai_realistic_content")
     ai_reviewed = isinstance(ai_status, str) and ai_status in {
@@ -320,6 +506,40 @@ def package_story(
             "Human review: assess whether realistic AI-generated or altered media requires platform disclosure."
         ]
     )
+    chapters, chapter_issue = _verified_chapters(story_facts)
+    chapter_duration = None
+    if story_facts.get("duration_verified") is True:
+        chapter_duration = story_facts.get("duration_seconds")
+    elif (
+        isinstance(story_facts.get("master"), dict)
+        and story_facts["master"].get("duration_verified") is True
+    ):
+        chapter_duration = story_facts["master"].get("duration_seconds")
+    if chapter_issue:
+        queue_chapter = [chapter_issue]
+    else:
+        queue_chapter = []
+    platform_assets_input = story_facts.get("platform_assets")
+    if not isinstance(platform_assets_input, dict):
+        platform_assets_input = {}
+    platform_asset_status: dict[str, dict[str, Any]] = {}
+    for platform in selected_platforms:
+        if platform not in DEFAULT_PLATFORMS:
+            raise ValueError(f"Unsupported platform: {platform}")
+        asset = _asset_status(
+            platform_assets_input.get(platform), asset_verification_cache
+        )
+        asset["variant_reviewed"] = (
+            platform_assets_input.get(platform, {}).get("variant_reviewed") is True
+            if isinstance(platform_assets_input.get(platform), dict)
+            else False
+        )
+        asset["audience_reviewed"] = (
+            platform_assets_input.get(platform, {}).get("audience_reviewed") is True
+            if isinstance(platform_assets_input.get(platform), dict)
+            else False
+        )
+        platform_asset_status[platform] = asset
     queue: list[str] = []
     if not master["verified"]:
         queue.append(
@@ -330,20 +550,43 @@ def package_story(
             "Provide a captions artifact path and matching SHA-256, or record a reviewed reason captions are unavailable."
         )
     if not qa_ok:
-        queue.append("Complete and pass final creative QA.")
+        queue.append(
+            "Complete final creative QA bound to this story_id, script SHA-256, and master SHA-256."
+        )
     queue.extend(rights_queue)
     queue.extend(audience_queue)
     queue.extend(ai_queue)
+    queue.extend(queue_chapter)
+    if not audience_reviewed:
+        queue.append("Audience setting is not reviewed for this package.")
+    if not all(
+        asset["verified"] and asset["variant_reviewed"] and asset["audience_reviewed"]
+        for asset in platform_asset_status.values()
+    ):
+        queue.append(
+            "Review a matching platform-specific media asset and audience settings for every selected platform."
+        )
 
     tags = _hashtags(story_facts)
     keywords = _normal_topics(story_facts)
     platforms_out: dict[str, Any] = {}
-    for platform in dict.fromkeys(platforms):
-        if platform not in DEFAULT_PLATFORMS:
-            raise ValueError(f"Unsupported platform: {platform}")
+    for platform in selected_platforms:
         rendered_title = _title(story_facts, platform)
         description = _description(story_facts, platform, tags)
         platform_queue = list(queue)
+        media_asset = platform_asset_status[platform]
+        if not media_asset["verified"]:
+            platform_queue.append(
+                f"Provide a verified platform-specific media asset for {platform}."
+            )
+        if not media_asset["variant_reviewed"]:
+            platform_queue.append(
+                f"Review the {platform} media variant against its format and story continuity."
+            )
+        if not media_asset["audience_reviewed"]:
+            platform_queue.append(
+                f"Review audience and child-directed settings for {platform}."
+            )
         if _UNSUPPORTED_PROMISES.search(rendered_title) and not any(
             term.casefold() in script.casefold()
             for term in _UNSUPPORTED_PROMISES.findall(rendered_title)
@@ -351,6 +594,16 @@ def package_story(
             platform_queue.append(
                 "Review title: it contains a high-risk promise or factual hook not evidenced by the script."
             )
+        platform_chapters = chapters
+        platform_chapter_issue = None
+        if platform == "youtube_long":
+            platform_chapters, platform_chapter_issue = _youtube_chapters(
+                chapters, chapter_duration
+            )
+        elif platform == "youtube_short":
+            platform_chapters = []
+        if platform_chapter_issue:
+            platform_queue.append(platform_chapter_issue)
         platform_queue.extend(
             _metadata_limits(platform, rendered_title, description, keywords)
         )
@@ -362,7 +615,9 @@ def package_story(
             "description": description,
             "hashtags": tags,
             "keywords": keywords,
-            "chapters": _verified_chapters(story_facts),
+            "chapters": platform_chapters,
+            "media_asset": media_asset,
+            "ready_for_manual_handoff": False,
             "thumbnail_brief": _text(story_facts.get("thumbnail_brief")) or None,
             "title_hook_promise_check": {
                 "status": "review_required"
@@ -382,6 +637,7 @@ def package_story(
         "schema_version": 1,
         "story_id": story_id,
         "title": title,
+        "script_sha256": script_sha256,
         "metadata_only": True,
         "publishing": "manual_handoff_only",
         "master": master,
@@ -390,15 +646,25 @@ def package_story(
             "made_for_kids": made_for_kids,
             "language": _text(audience.get("language")) or None,
         },
-        "ai_realistic_content_review": ai_status or "human_review_required",
+        "ai_realistic_content_review": ai_status
+        if isinstance(ai_status, str)
+        else "human_review_required",
         "platforms": platforms_out,
         "required_approval": {
             "final_creative_qa_passed": qa_ok,
+            "qa_bound_to_story_script_and_master": qa_ok,
             "asset_sha256_verified": master["verified"],
             "captions_sha256_verified": captions["verified"],
             "source_and_music_rights_resolved": rights_ok,
-            "made_for_kids_reviewed": isinstance(made_for_kids, bool),
+            "rights_coverage": rights_coverage,
+            "made_for_kids_reviewed": audience_reviewed,
             "realistic_ai_disclosure_reviewed": ai_reviewed,
+            "platform_assets_and_audiences_reviewed": all(
+                asset["verified"]
+                and asset["variant_reviewed"]
+                and asset["audience_reviewed"]
+                for asset in platform_asset_status.values()
+            ),
         },
         "review_queue": list(dict.fromkeys(queue)),
         "strategy": {
@@ -418,22 +684,56 @@ def package_story(
     package_hash = hashlib.sha256(canonical).hexdigest()
     package["package_sha256"] = package_hash
 
-    approval_valid = bool(
+    readiness_checks = package["required_approval"]
+    readiness_checks_passed = (
+        all(
+            value is True
+            for key, value in readiness_checks.items()
+            if key != "rights_coverage"
+        )
+        and rights_ok
+    )
+    approval_record_matches = bool(
         isinstance(approval, dict)
         and approval.get("master_sha256") == master["sha256"]
         and approval.get("package_sha256") == package_hash
         and master["verified"]
     )
+    approval_valid = approval_record_matches and readiness_checks_passed
     package["approval"] = {
+        "approval_record_matches_exact_package": approval_record_matches,
         "verified_for_exact_master_and_package": approval_valid,
-        "status": "approved_for_manual_handoff"
-        if approval_valid
-        else "approval_required",
+        "status": (
+            "approved_for_manual_handoff"
+            if approval_valid
+            else "recorded_but_blocked"
+            if approval_record_matches
+            else "approval_required"
+        ),
     }
-    if not approval_valid:
+    package["metadata_copy_review_status"] = (
+        "owner_approved_for_exact_package"
+        if approval_record_matches
+        else "review_required"
+    )
+    if not approval_record_matches:
         package["review_queue"].append(
             "Owner approval must match this exact package SHA-256 and master SHA-256."
         )
+    package["readiness"] = {
+        "required_checks_passed": readiness_checks_passed,
+        "owner_approval_matches": approval_valid,
+        "ready_for_manual_handoff": approval_valid and readiness_checks_passed,
+        "ready_for_publication": False,
+        "status": "ready_for_manual_handoff"
+        if approval_valid and readiness_checks_passed
+        else "review_required",
+    }
+    package["review_status"] = (
+        "approved" if approval_record_matches else "owner_approval_required"
+    )
+    for item in package["platforms"].values():
+        item["ready_for_manual_handoff"] = bool(approval_valid)
     return package
 
 
