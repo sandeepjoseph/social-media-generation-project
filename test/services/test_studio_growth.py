@@ -131,6 +131,38 @@ def test_package_is_truthful_and_uses_documented_platform_limits(tmp_path):
     assert package["readiness"]["ready_for_publication"] is False
 
 
+def test_explicit_brand_tag_precedes_four_story_supported_topics(tmp_path):
+    facts = _facts(tmp_path)
+    facts["brand_hashtags"] = ["ExampleStoryCo"]
+    package = package_story(facts, platforms=("youtube_long",))
+
+    tags = package["platforms"]["youtube_long"]["hashtags"]
+    assert tags == [
+        "#ExampleStoryCo",
+        "#Promise",
+        "#Cooperation",
+        "#Folktale",
+    ]
+
+
+def test_brand_tags_reject_urls_trends_and_claims_and_never_exceed_five(tmp_path):
+    facts = _facts(tmp_path)
+    facts["brand_hashtags"] = [
+        "https://example.com",
+        "#viral",
+        "guaranteed",
+        "ExampleStoryCo",
+        "AnotherBrand",
+    ]
+    package = package_story(facts, platforms=("tiktok",))
+
+    tags = package["platforms"]["tiktok"]["hashtags"]
+    assert tags == ["#ExampleStoryCo", "#Promise", "#Cooperation", "#Folktale"]
+    assert len(tags) <= 5
+    assert all("viral" not in tag.casefold() for tag in tags)
+    assert all("guaranteed" not in tag.casefold() for tag in tags)
+
+
 def test_unverified_or_missing_evidence_stays_in_review_queue(tmp_path):
     facts = _facts(tmp_path)
     facts["source_evidence"][1]["rights_status"] = "unknown"

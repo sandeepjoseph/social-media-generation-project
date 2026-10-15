@@ -166,9 +166,30 @@ def _normalize_words(value: str) -> tuple[str, ...]:
 
 
 def _hashtags(facts: dict[str, Any]) -> list[str]:
-    """Make up to five narrow tags from facts; never inject trending tags."""
+    """Make up to five narrow tags; explicit brand tokens precede story topics."""
     result: list[str] = []
     seen: set[str] = set()
+
+    # Brand tags are accepted only when the caller supplies a literal short
+    # token. This deliberately excludes phrases, URLs, calls to action, and
+    # trend or performance claims.
+    for raw_brand in _items(facts.get("brand_hashtags")):
+        token = raw_brand[1:] if raw_brand.startswith("#") else raw_brand
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_]{1,32}", token)
+            or token.casefold() in _TREND_WORDS
+            or _UNSUPPORTED_PROMISES.search(token)
+        ):
+            continue
+        tag = f"#{token}"
+        if tag.casefold() not in seen:
+            result.append(tag)
+            seen.add(tag.casefold())
+        if len(result) == 1:
+            # Keep the supplied brand identity while reserving four slots for
+            # story-supported topics, even if several aliases were supplied.
+            break
+
     for topic in _normal_topics(facts):
         words = [word for word in _HASHTAG_WORDS.split(topic.casefold()) if word]
         words = [word for word in words if word not in _STOP_WORDS]
