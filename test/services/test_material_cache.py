@@ -151,6 +151,11 @@ class TestMaterialSearchCache(unittest.TestCase):
         """
         cache_path = self._cache_path()
         cache_path.write_text("{invalid-json", encoding="utf-8")
+        # Pin the file inside the cache's valid-age window. Windows runner clock
+        # and filesystem timestamp granularity can otherwise route this fixture
+        # through the expired-cache branch before malformed JSON is read.
+        now = time.time()
+        os.utime(cache_path, (now - 1, now - 1))
 
         with patch("app.services.material_cache.logger.warning") as warning:
             loaded = material_cache.load_material_search_cache(
@@ -158,6 +163,7 @@ class TestMaterialSearchCache(unittest.TestCase):
                 search_term="nature",
                 minimum_duration=5,
                 video_aspect=VideoAspect.portrait,
+                now=now,
             )
 
         self.assertIsNone(loaded)
