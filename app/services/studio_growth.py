@@ -212,7 +212,9 @@ def _description(facts: dict[str, Any], platform: str, hashtags: list[str]) -> s
     title = _text(facts.get("title"))
     intent = _text(facts.get("moral_or_learning_intent"))
     synopsis = _text(facts.get("synopsis") or facts.get("story_summary"))
-    parts = [synopsis] if synopsis else [f"An original story: {title}."]
+    # Source status is often unavailable at packaging time, so do not imply
+    # that a folklore adaptation is newly original; use neutral wording.
+    parts = [synopsis] if synopsis else [f"Story: {title}."]
     if intent:
         parts.append(f"Story theme: {intent}.")
     if hashtags:

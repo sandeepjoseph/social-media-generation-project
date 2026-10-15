@@ -58,6 +58,10 @@ def test_package_is_truthful_and_uses_documented_platform_limits(tmp_path):
     assert package["metadata_only"] is True
     assert package["publishing"] == "manual_handoff_only"
     assert package["platforms"]["youtube_long"]["title"] == "The Potter's Promise"
+    assert (
+        "original story"
+        not in package["platforms"]["youtube_long"]["description"].casefold()
+    )
     assert package["platforms"]["youtube_long"]["chapters"][1] == {
         "seconds": 48,
         "title": "A promise kept",
