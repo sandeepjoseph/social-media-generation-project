@@ -565,7 +565,12 @@ class TestTaskService(unittest.TestCase):
         ):
             result = tm.start("zero-volume-without-key", params)
 
-        generate_script.assert_called_once_with("zero-volume-without-key", params)
+        generate_script.assert_called_once()
+        self.assertEqual(generate_script.call_args.args, ("zero-volume-without-key", params))
+        self.assertEqual(
+            generate_script.call_args.kwargs["cost_context"]["_cost_router_job_id"],
+            "zero-volume-without-key",
+        )
         self.assertEqual(result["failed_stage"], "script")
 
     def test_loomloom_material_failure_keeps_remote_run_id(self):
@@ -1671,12 +1676,18 @@ class TestTaskService(unittest.TestCase):
         ):
             result = tm.start("youtube-cross-post", params)
 
-        generate_metadata.assert_called_once_with(
-            video_subject="Coffee",
-            video_script="generated script",
-            language="en",
-            platform="youtube_shorts",
+        generate_metadata.assert_called_once()
+        metadata_call = generate_metadata.call_args.kwargs
+        self.assertEqual(
+            {key: metadata_call[key] for key in ("video_subject", "video_script", "language", "platform")},
+            {
+                "video_subject": "Coffee",
+                "video_script": "generated script",
+                "language": "en",
+                "platform": "youtube_shorts",
+            },
         )
+        self.assertEqual(metadata_call["app_config"]["_cost_router_job_id"], "youtube-cross-post")
         expected_extra = {
             "youtube_title": "Morning Coffee",
             "youtube_description": "A better morning.",

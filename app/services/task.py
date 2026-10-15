@@ -1,4 +1,5 @@
 import json
+import copy
 import math
 import os
 import re
@@ -34,6 +35,7 @@ from app.services import (
     voice,
 )
 from app.services import upload_post
+from app.services.story_studio import snapshot_job_config
 from app.services import state as sm
 from app.utils import file_security, utils
 from app.utils.subtitle_writer import staged_subtitle_file
@@ -349,17 +351,20 @@ def _stage_progress_reporter(task_id: str, stage_start: float, stage_end: float)
     return report
 
 
-def generate_script(task_id, params):
+def generate_script(task_id, params, cost_context=None):
     logger.info("\n\n## generating video script")
     video_script = params.video_script.strip()
     if not video_script:
-        video_script = llm.generate_script(
-            video_subject=params.video_subject,
-            language=params.video_language,
-            paragraph_number=params.paragraph_number,
-            video_script_prompt=params.video_script_prompt,
-            custom_system_prompt=params.custom_system_prompt,
-        )
+        options = {
+            "video_subject": params.video_subject,
+            "language": params.video_language,
+            "paragraph_number": params.paragraph_number,
+            "video_script_prompt": params.video_script_prompt,
+            "custom_system_prompt": params.custom_system_prompt,
+        }
+        if cost_context is not None:
+            options["app_config"] = cost_context
+        video_script = llm.generate_script(**options)
     else:
         logger.debug(f"video script: \n{video_script}")
 
@@ -370,19 +375,22 @@ def generate_script(task_id, params):
     return video_script
 
 
-def generate_terms(task_id, params, video_script):
+def generate_terms(task_id, params, video_script, cost_context=None):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
         # 开启素材按文案顺序匹配后，关键词本身也必须按脚本叙事顺序生成；
         # 否则后续即使顺序下载和顺序拼接，也只能复用一组全局主题词，
         # 无法改善“后面内容的画面提前出现”的问题。
-        video_terms = llm.generate_terms(
-            video_subject=params.video_subject,
-            video_script=utils.remove_pause_tags(video_script),
-            amount=8 if params.match_materials_to_script else 5,
-            match_script_order=params.match_materials_to_script,
-        )
+        options = {
+            "video_subject": params.video_subject,
+            "video_script": utils.remove_pause_tags(video_script),
+            "amount": 8 if params.match_materials_to_script else 5,
+            "match_script_order": params.match_materials_to_script,
+        }
+        if cost_context is not None:
+            options["app_config"] = cost_context
+        video_terms = llm.generate_terms(**options)
     else:
         if isinstance(video_terms, str):
             video_terms = [term.strip() for term in re.split(r"[,，]", video_terms)]
@@ -1257,6 +1265,7 @@ def _run_cross_post(
     youtube_privacy_status: str,
     youtube_made_for_kids: bool = False,
     upload_account: dict | None = None,
+    cost_context: dict | None = None,
 ) -> None:
     """后台执行跨平台发布，并只补充发布相关的任务字段。"""
     results = []
@@ -1291,12 +1300,15 @@ def _run_cross_post(
                 first = (platforms[0] or "").strip().lower()
                 # llm.py resolves unknown ids to its default platform.
                 social_platform = _CROSS_POST_SOCIAL_PLATFORMS.get(first, first)
-            metadata = llm.generate_social_metadata(
-                video_subject=video_subject,
-                video_script=video_script,
-                language=video_language or "",
-                platform=social_platform,
-            )
+            metadata_options = {
+                "video_subject": video_subject,
+                "video_script": video_script,
+                "language": video_language or "",
+                "platform": social_platform,
+            }
+            if cost_context is not None:
+                metadata_options["app_config"] = cost_context
+            metadata = llm.generate_social_metadata(**metadata_options)
             if has_youtube:
                 youtube_extra = {
                     "youtube_title": metadata.get("title", video_subject),
@@ -1459,6 +1471,7 @@ def _schedule_cross_post(
     platforms: list[str],
     youtube_privacy_status: str,
     youtube_made_for_kids: bool = False,
+    cost_context: dict | None = None,
 ) -> str | None:
     """提交后台发布任务；成功返回 None，调度失败返回可查询的错误原因。"""
     if not _cross_post_slots.acquire(blocking=False):
@@ -1487,6 +1500,7 @@ def _schedule_cross_post(
             youtube_privacy_status,
             youtube_made_for_kids,
             upload_post.upload_post_service.snapshot_account(),
+            copy.deepcopy(cost_context) if cost_context else None,
         )
         _register_cross_post_future(task_id, future)
         future.add_done_callback(partial(_finalize_cross_post_future, task_id))
@@ -1517,6 +1531,7 @@ def _run_pipeline(
     voxcpm_reference_audio: bytes | None = None,
     voxcpm_prompt_audio: bytes | None = None,
     voxcpm_prompt_text: str = "",
+    cost_context: dict | None = None,
 ):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
     sm.state.update_task(
@@ -1647,7 +1662,7 @@ def _run_pipeline(
         )
 
     # 1. Generate script
-    video_script = generate_script(task_id, params)
+    video_script = generate_script(task_id, params, cost_context=cost_context)
     # The LLM adapter uses a leading "Error: " as its failure sentinel. A
     # user-provided script may legitimately quote that text anywhere, including
     # at the beginning, so only interpret it for an LLM-generated script.
@@ -1675,7 +1690,7 @@ def _run_pipeline(
     # 2. Generate terms
     video_terms = ""
     if stop_at in {"terms", "materials", "video"} and params.video_source != "local":
-        video_terms = generate_terms(task_id, params, video_script)
+        video_terms = generate_terms(task_id, params, video_script, cost_context=cost_context)
         if not video_terms:
             return _mark_task_failed(
                 task_id,
@@ -1884,6 +1899,7 @@ def _run_pipeline(
             youtube_made_for_kids=(
                 upload_post.upload_post_service.youtube_made_for_kids
             ),
+            cost_context=cost_context,
         )
         # 队列满或线程池关闭属于同步可知的调度失败。任务状态已经由调度函数
         # 更新，这里同步修正返回快照，避免调用方收到与后续查询不一致的 pending。
@@ -1913,6 +1929,10 @@ def start(
     默认值，让自定义音频始终受当前任务目录约束。
     """
     try:
+        # Snapshot routing flags per new task. Existing tasks and the running
+        # process configuration are not mutated; credentials stay in the base
+        # config and the override reader accepts only a small allowlist.
+        cost_context = snapshot_job_config(task_id, copy.deepcopy(config.app))
         return _run_pipeline(
             task_id,
             params,
@@ -1923,6 +1943,7 @@ def start(
             voxcpm_reference_audio=voxcpm_reference_audio,
             voxcpm_prompt_audio=voxcpm_prompt_audio,
             voxcpm_prompt_text=voxcpm_prompt_text,
+            cost_context=cost_context,
         )
     except Exception as exc:
         logger.exception(

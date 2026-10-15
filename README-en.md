@@ -601,3 +601,6 @@ Click to view the [`LICENSE`](LICENSE) file
 ### Editable local video projects
 
 Use [revision-aware local projects](docs/video-projects.md) to replace prepared scene media, compare revisions and rebuild only affected stages. The opt-in CLI preserves verified artifacts and the last successful export; it makes no provider calls or automatic posts.
+# Director-led story workflow
+
+The additive **Director Studio** page is available from the Streamlit pages menu. It stores resumable projects in local SQLite, keeps research/manual browser work explicit, routes optional screenplay drafting through the existing provider config, and prepares hash-bound platform metadata without publishing. See [`docs/director-studio.md`](docs/director-studio.md) and [`examples/story-request.example.json`](examples/story-request.example.json).

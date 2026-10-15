@@ -311,7 +311,7 @@ class TestLLMConnection(unittest.TestCase):
     def test_connection_sends_one_minimal_request(self):
         """连接测试只发送一次固定最小请求，不触发脚本生成重试。"""
         with (
-            patch.object(llm, "_generate_response", return_value="OK") as generate,
+            patch.object(llm, "_generate_response_provider", return_value="OK") as generate,
             patch.object(llm, "perf_counter", side_effect=[10.0, 10.25]),
         ):
             result = llm.test_connection()
@@ -357,7 +357,7 @@ class TestLLMConnection(unittest.TestCase):
         """超时/连接失败要附上排查方向，而不是只显示 SDK 原始文案。"""
         with (
             patch.object(
-                llm, "_generate_response", return_value="Error: Request timed out."
+                llm, "_generate_response_provider", return_value="Error: Request timed out."
             ),
             patch.object(llm, "perf_counter", side_effect=[0.0, 5.0]),
         ):
@@ -375,7 +375,7 @@ class TestLLMConnection(unittest.TestCase):
         with (
             patch.object(
                 llm,
-                "_generate_response",
+                "_generate_response_provider",
                 return_value="Error: invalid API key",
             ),
             patch.object(llm, "perf_counter", side_effect=[20.0, 20.5]),
@@ -387,7 +387,7 @@ class TestLLMConnection(unittest.TestCase):
     def test_connection_rejects_empty_response(self):
         """极端情况下的空响应应显示明确错误，而不是误报连接成功。"""
         with (
-            patch.object(llm, "_generate_response", return_value=""),
+            patch.object(llm, "_generate_response_provider", return_value=""),
             patch.object(llm, "perf_counter", side_effect=[30.0, 31.0]),
         ):
             result = llm.test_connection()
@@ -469,6 +469,63 @@ class TestGenerateResponseTransportLimits(unittest.TestCase):
                 kwargs = client_constructor.call_args.kwargs
                 self.assertEqual(kwargs.get("timeout"), 12.5)
                 self.assertEqual(kwargs.get("max_retries"), 0)
+
+    def test_anthropic_workspace_header_is_forwarded_without_changing_api_key(self):
+        config.app.update({
+            "llm_provider": "anthropic",
+            "anthropic_api_key": "test-key",
+            "anthropic_model_name": "claude-test",
+            "anthropic_base_url": "https://api.anthropic.com/v1/",
+            "anthropic_workspace_id": "workspace-123",
+        })
+        client = self._fake_client()
+        with (
+            patch.object(llm, "OpenAI", return_value=client) as constructor,
+            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+        ):
+            result = llm._generate_response("hello")
+        self.assertEqual(result, "ok")
+        kwargs = constructor.call_args.kwargs
+        self.assertEqual(kwargs["api_key"], "test-key")
+        self.assertEqual(kwargs["default_headers"], {"anthropic-workspace-id": "workspace-123"})
+
+    def test_anthropic_without_workspace_keeps_default_constructor_headers(self):
+        config.app.update({
+            "llm_provider": "anthropic",
+            "anthropic_api_key": "test-key",
+            "anthropic_model_name": "claude-test",
+            "anthropic_base_url": "https://api.anthropic.com/v1/",
+            "anthropic_workspace_id": "",
+        })
+        client = self._fake_client()
+        with (
+            patch.object(llm, "OpenAI", return_value=client) as constructor,
+            patch.object(llm, "ChatCompletion", types.SimpleNamespace),
+        ):
+            result = llm._generate_response("hello")
+        self.assertEqual(result, "ok")
+        self.assertEqual(constructor.call_args.kwargs["api_key"], "test-key")
+        self.assertNotIn("default_headers", constructor.call_args.kwargs)
+
+    def test_cost_router_cache_avoids_second_mocked_provider_call_with_unknown_billing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = dict(config.app)
+            runtime.update({
+                "cost_router_enabled": True,
+                "cost_router_cache_enabled": True,
+                "cost_router_state_path": str(state_dir / "ledger.sqlite3"),
+                "cost_router_cache_path": str(state_dir / "cache.sqlite3"),
+                "cost_router_candidates": [],
+            })
+            provider = "mocked screenplay response"
+            with patch.object(llm, "_generate_response_provider", return_value=provider) as mock_provider:
+                first = llm._generate_response("same deterministic prompt", app_config=runtime, stage="script", task_type="scriptwriting")
+                second = llm._generate_response("same deterministic prompt", app_config=runtime, stage="script", task_type="scriptwriting")
+            self.assertEqual(first, provider)
+            self.assertEqual(second, provider)
+            self.assertEqual(mock_provider.call_count, 1)
+            self.assertEqual({"baseline_mocked_provider_calls": 2, "optimized_mocked_provider_calls": mock_provider.call_count}, {"baseline_mocked_provider_calls": 2, "optimized_mocked_provider_calls": 1})
 
     def test_default_generation_keeps_sdk_defaults(self):
         """不传约束时客户端构造参数保持原样，生成链路行为不变。"""

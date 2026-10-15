@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import math
 import os
@@ -14,10 +15,22 @@ from openai import AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 
 from app.config import config
-from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
+from app.models.llm_provider import (
+    DEFAULT_LLM_PROVIDER_ID,
+    LLM_PROVIDER_REGISTRY,
+    get_llm_provider,
+)
+from app.services.cost_router import (
+    DurableExecutionGuard,
+    ExecutionGuard,
+    ResponseCache,
+    classify_task_difficulty,
+    route_task,
+)
 from app.utils import utils
 
 _max_retries = 5
+_provider_execution_guard = ExecutionGuard(max_attempts=5, max_concurrency=3)
 MIN_SCRIPT_PARAGRAPH_NUMBER = 1
 MAX_SCRIPT_PARAGRAPH_NUMBER = 10
 MAX_SCRIPT_PROMPT_LENGTH = 2000
@@ -305,7 +318,33 @@ def _extract_qwen_generation_text(response) -> str:
     return _normalize_text_response(text, "qwen")
 
 
-def _generate_response(
+def _configured_cost_candidates(runtime_app_config):
+    """Return configured model candidates whose required credentials are present."""
+    specs = {item.provider_id: item for item in LLM_PROVIDER_REGISTRY}
+    configured = runtime_app_config.get("cost_router_candidates", [])
+    if not isinstance(configured, (list, tuple)):
+        return []
+    result = []
+    for item in configured:
+        if not isinstance(item, dict):
+            continue
+        provider_id = str(item.get("provider", "")).strip().lower()
+        model_name = str(item.get("model", "")).strip()
+        spec = specs.get(provider_id)
+        if spec is None or not model_name:
+            continue
+        if spec.requires_api_key and not runtime_app_config.get(spec.config_key("api_key"), ""):
+            continue
+        if spec.requires_base_url and not (
+            runtime_app_config.get(spec.config_key("base_url"), "")
+            or spec.effective_default_base_url
+        ):
+            continue
+        result.append(item)
+    return result
+
+
+def _generate_response_provider(
     prompt: str,
     app_config=None,
     request_timeout: float | None = None,
@@ -738,9 +777,15 @@ def _generate_response(
             else:
                 raise Exception(f"[{llm_provider}] returned an empty response")
 
+        default_headers = {}
+        if llm_provider == "anthropic":
+            workspace_id = str(extra_values.get("workspace_id", "") or "").strip()
+            if workspace_id:
+                default_headers["anthropic-workspace-id"] = workspace_id
         client = sdk_client = OpenAI(
             api_key=api_key,
             base_url=base_url,
+            **({"default_headers": default_headers} if default_headers else {}),
             **_sdk_transport_options(request_timeout, max_retries),
         )
 
@@ -775,6 +820,189 @@ def _generate_response(
                     )
 
 
+def _guarded_provider_call(
+    *, prompt, runtime_config, routing, selected_id, selected_model, cache_key,
+    cache_path, stage, task_type, attempt, request_timeout=None, max_retries=None,
+):
+    acquired = False
+    if routing.enabled:
+        if not _provider_execution_guard.acquire(blocking=False):
+            return "Error: cost router concurrency limit reached; retry this task later"
+        acquired = True
+    try:
+        durable_guard = None
+        reservation_key = ""
+        job_id = str(runtime_config.get("_cost_router_job_id", "") or "")
+        if routing.enabled:
+            ledger_path = runtime_config.get("cost_router_state_path") or os.path.join(
+                utils.storage_dir("cost_router", create=True), "ledger.sqlite3"
+            )
+            durable_guard = DurableExecutionGuard(str(ledger_path), max_attempts=5)
+            limits = {}
+            if runtime_config.get("cost_router_budget_api_project") is not None:
+                limits["api"] = float(runtime_config["cost_router_budget_api_project"])
+            if runtime_config.get("cost_router_budget_api_per_video") is not None:
+                limits["api:video"] = float(runtime_config["cost_router_budget_api_per_video"])
+            if "api:video" in limits and not job_id:
+                return "Error: cost router needs a task id to enforce the per-video budget"
+            reservation_key = hashlib.sha256(f"{job_id}:{cache_key}".encode()).hexdigest()
+            if not durable_guard.reserve(
+                reservation_key,
+                attempt,
+                "api",
+                routing.estimated_cost if routing.cost_status == "known" else None,
+                limits,
+                job_id=job_id,
+                trace={
+                    "stage": stage,
+                    "task_type": task_type,
+                    "provider": selected_id,
+                    "model": selected_model,
+                    "tier": routing.tier,
+                    "price_source": routing.price_source,
+                    "price_checked_on": routing.price_checked_on,
+                    "billing_unit": routing.billing_unit,
+                },
+            ):
+                return "Error: cost router blocked this request (budget, duplicate, or retry limit)"
+
+        result = _generate_response_provider(
+            prompt=prompt,
+            app_config=runtime_config,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
+        )
+        if isinstance(result, str) and not result.startswith("Error: "):
+            if routing.enabled and runtime_config.get("cost_router_cache_enabled", False):
+                try:
+                    ResponseCache(str(cache_path)).put(cache_key, result)
+                except Exception as exc:
+                    logger.warning(f"LLM response cache write failed: {type(exc).__name__}")
+            if durable_guard is not None:
+                durable_guard.complete(
+                    reservation_key,
+                    attempt=attempt,
+                    input_chars=len(prompt),
+                    output_chars=len(result),
+                    actual_usage_source="unknown",
+                )
+        elif durable_guard is not None:
+            # A provider error can arrive after acceptance. Hold the key so retries
+            # do not duplicate a request with an uncertain remote state.
+            durable_guard.mark_uncertain(reservation_key)
+        return result
+    finally:
+        if acquired:
+            _provider_execution_guard.release()
+
+
+def _generate_response(
+    prompt: str,
+    app_config=None,
+    request_timeout: float | None = None,
+    max_retries: int | None = None,
+    *, stage: str = "llm", task_type: str = "text_generation",
+    difficulty: str | None = None, attempt: int = 1,
+) -> str:
+    runtime_config = dict(app_config if app_config is not None else config.app)
+    current_id = str(runtime_config.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
+    current_spec = get_llm_provider(current_id)
+    if current_spec is None:
+        return f"Error: {current_id}: unsupported llm provider"
+    current_model = current_spec.resolve_model_name(
+        runtime_config.get(current_spec.config_key("model_name"), "")
+    )
+    effective_difficulty = difficulty or classify_task_difficulty(task_type, prompt)
+    routing = route_task(
+        stage=stage,
+        task_type=task_type,
+        difficulty=effective_difficulty,
+        current_provider=current_id,
+        current_model=current_model,
+        available_candidates=_configured_cost_candidates(runtime_config),
+        config=runtime_config,
+        cost_domain="api",
+        exceptional_authorized=bool(
+            runtime_config.get("cost_router_exceptional_authorized", False)
+        ),
+        request_fingerprint=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    )
+    selected_id = routing.provider or current_id
+    selected_spec = get_llm_provider(selected_id)
+    if selected_spec is None:
+        return f"Error: {selected_id}: unsupported llm provider"
+    selected_model = routing.model or current_model
+    runtime_config["llm_provider"] = selected_id
+    runtime_config[selected_spec.config_key("model_name")] = selected_model
+    setting_names = (
+        "temperature", "top_p", "top_k", "max_tokens", "max_output_tokens",
+        "response_format", "seed", "anthropic_workspace_id",
+    )
+    cache_key = hashlib.sha256(json.dumps({
+        "route": routing.cache_key,
+        "stage": stage,
+        "task_type": task_type,
+        "provider": selected_id,
+        "adapter": selected_spec.adapter,
+        "model": selected_model,
+        "base_url": runtime_config.get(selected_spec.config_key("base_url"), ""),
+        "generation_settings": {key: runtime_config[key] for key in setting_names if key in runtime_config},
+        "prompt": prompt,
+        "output_schema_version": 1,
+    }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    logger.info(
+        f"LLM route: stage={stage}, task={task_type}, provider={selected_id}, "
+        f"model={selected_model}, tier={routing.tier}, estimated_cost="
+        f"{routing.estimated_cost if routing.cost_status == 'known' else 'unknown'}, "
+        f"domain={routing.cost_domain}, price_source={routing.price_source or 'unknown'}, "
+        f"price_checked_on={routing.price_checked_on or 'unknown'}, "
+        f"billing_unit={routing.billing_unit or 'unknown'}, key={cache_key[:12]}"
+    )
+    cache_enabled = bool(routing.enabled and runtime_config.get("cost_router_cache_enabled", False))
+    cache_path = None
+    if cache_enabled:
+        cache_path = runtime_config.get("cost_router_cache_path") or os.path.join(
+            utils.storage_dir("cost_router", create=True), "responses.sqlite3"
+        )
+        try:
+            cached = ResponseCache(str(cache_path)).get(cache_key)
+        except Exception as exc:
+            logger.warning(f"LLM response cache unavailable: {type(exc).__name__}")
+        else:
+            if cached is not None:
+                logger.info(f"LLM response cache hit: {cache_key[:12]}")
+                return cached
+    return _guarded_provider_call(
+        prompt=prompt,
+        runtime_config=runtime_config,
+        routing=routing,
+        selected_id=selected_id,
+        selected_model=selected_model,
+        cache_key=cache_key,
+        cache_path=cache_path,
+        stage=stage,
+        task_type=task_type,
+        attempt=attempt,
+        request_timeout=request_timeout,
+        max_retries=max_retries,
+    )
+
+
+def _call_generate_response(prompt: str, app_config=None, **route_context) -> str:
+    """Preserve compatibility with integrations that monkeypatch the old signature."""
+    try:
+        return _generate_response(prompt=prompt, app_config=app_config, **route_context)
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        try:
+            return _generate_response(prompt=prompt, app_config=app_config)
+        except TypeError as fallback_exc:
+            if "unexpected keyword argument" not in str(fallback_exc):
+                raise
+            return _generate_response(prompt=prompt)
+
+
 def test_connection() -> tuple[bool, str, float]:
     """
     使用当前 Provider 配置发起一次最小请求，验证实际生成链路是否可用。
@@ -787,7 +1015,9 @@ def test_connection() -> tuple[bool, str, float]:
     成功状态、错误信息和请求耗时。
     """
     started_at = perf_counter()
-    response = _generate_response(
+    # Connection tests must exercise the configured provider directly and must
+    # not populate a response cache or consume a routed generation budget.
+    response = _generate_response_provider(
         prompt="Reply with exactly: OK",
         request_timeout=LLM_CONNECTION_TEST_TIMEOUT_SECONDS,
         max_retries=LLM_CONNECTION_TEST_MAX_RETRIES,
@@ -944,9 +1174,14 @@ def generate_script(
     for i in range(_max_retries):
         try:
             if app_config is None:
-                response = _generate_response(prompt=prompt)
+                response = _call_generate_response(
+                    prompt=prompt, stage="script", task_type="scriptwriting", attempt=i + 1
+                )
             else:
-                response = _generate_response(prompt=prompt, app_config=app_config)
+                response = _call_generate_response(
+                    prompt=prompt, app_config=app_config, stage="script",
+                    task_type="scriptwriting", attempt=i + 1
+                )
             if isinstance(response, str) and response.startswith("Error: "):
                 # _generate_response returns provider failures as text. Passing
                 # that text through would make the task treat it as narration.
@@ -1077,9 +1312,14 @@ Please note that you must use English for generating video search terms; Chinese
         search_terms = []
         try:
             if app_config is None:
-                response = _generate_response(prompt)
+                response = _call_generate_response(
+                    prompt, stage="materials", task_type="keyword_extraction", attempt=i + 1
+                )
             else:
-                response = _generate_response(prompt, app_config=app_config)
+                response = _call_generate_response(
+                    prompt, app_config=app_config, stage="materials",
+                    task_type="keyword_extraction", attempt=i + 1
+                )
             if response.startswith("Error: "):
                 # generate_terms 的公开返回类型是 List[str]。如果把 Provider 的
                 # 错误文案原样返回，下游只做空值判断时会把非空字符串误认为成功，
@@ -1331,6 +1571,7 @@ def generate_social_metadata(
     video_script: str = "",
     language: str = DEFAULT_SOCIAL_LANGUAGE,
     platform: str = DEFAULT_SOCIAL_PLATFORM,
+    app_config=None,
 ) -> dict:
     """
     生成短视频发布文案元数据。
@@ -1358,7 +1599,10 @@ def generate_social_metadata(
     response = ""
     for i in range(_max_retries):
         try:
-            response = _generate_response(prompt)
+            response = _call_generate_response(
+                prompt, app_config=app_config, stage="metadata",
+                task_type="social_metadata", attempt=i + 1
+            )
             if isinstance(response, str) and response.startswith("Error: "):
                 logger.error(f"failed to generate social metadata: {response}")
                 break
