@@ -125,9 +125,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Fail run and request human conflict resolution
+        if: steps.inspect.outputs.has_changes == 'true' && steps.inspect.outputs.mergeable != 'true'
+        run: |
+          {
+            echo "## Human action required"
+            echo "The upstream merge conflicts with fork main. The impact report is attached; resolve and test the merge manually. No review branch or PR was created."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Upstream merge conflict::Resolve and test the upstream merge manually; no PR was created."
+          exit 1
+
   prepare-review:
     needs: inspect
-    if: needs.inspect.outputs.has_changes == 'true'
+    if: needs.inspect.outputs.has_changes == 'true' && needs.inspect.outputs.mergeable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -163,6 +173,10 @@ jobs:
           EXPECTED_BASE_SHA: ${{ needs.inspect.outputs.base_sha }}
           MERGEABLE: ${{ needs.inspect.outputs.mergeable }}
         run: |
+          if [ "$MERGEABLE" != true ]; then
+            echo "Merge conflicts require human resolution; refusing to create a review branch or PR."
+            exit 1
+          fi
           short_sha="${UPSTREAM_SHA::12}"
           base_short="${EXPECTED_BASE_SHA::12}"
           branch="codex/upstream-main-${short_sha}-${base_short}"
