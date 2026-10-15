@@ -166,6 +166,8 @@ def test_flow_receipt_provenance_can_archive_an_imported_caption(tmp_path):
     ("filename", "kind", "provenance"),
     [
         ("login-screenshot.png", "generated_image", "generated"),
+        ("private-account-details.png", "generated_image", "generated"),
+        ("billing.png", "generated_image", "generated"),
         ("private.png", "not-a-kind", "generated"),
         ("clip.mp4", "generated_video", "unknown_source"),
         ("config.toml", "generated_caption", "generated"),
