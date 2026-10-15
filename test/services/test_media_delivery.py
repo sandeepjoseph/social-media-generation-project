@@ -92,7 +92,9 @@ def test_archive_uses_timezone_story_locale_and_variant_and_records_absolute_pat
 def test_long_unicode_filename_stays_within_byte_limit_and_keeps_malayalam_marks(
     tmp_path,
 ):
-    source = tmp_path / ("കഥ" * 90 + ".mp4")
+    # Stay below the filesystem's per-component byte limit while exercising a
+    # long Unicode source basename and a separately bounded archive filename.
+    source = tmp_path / ("കഥ" * 30 + ".mp4")
     source.write_bytes(b"sample")
     result = media_delivery.add_artifact(
         _artifact(source, story_title="ശാന്തമായ കഥ " * 80, locale="ml"),
