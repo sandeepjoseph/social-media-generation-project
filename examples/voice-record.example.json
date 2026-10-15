@@ -1,0 +1,7 @@
+{
+  "locale": "en",
+  "status": "reviewed",
+  "voice_id": "reviewed-voice-id-or-human-voice-label",
+  "provider": "local-or-provider-name",
+  "reviewer": "Name of reviewer who checked the actual audio"
+}

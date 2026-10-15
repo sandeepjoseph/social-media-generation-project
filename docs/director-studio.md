@@ -18,6 +18,7 @@ python -m app.services.story_studio add-evidence STORY_ID evidence.json
 python -m app.services.story_studio ingest-screenplay STORY_ID screenplay.json
 python -m app.services.story_studio ingest-storyboard STORY_ID storyboard.json
 python -m app.services.story_studio storyboard-draft STORY_ID
+python -m app.services.story_studio register-variant STORY_ID master.mp4 captions.en.srt --variant-id master-en-v1 --audio-locale en --caption-locale en --fluent-reviewer "Reviewer Name" --voice-json voice-record.json --burn-in-reviewed --burn-in-reviewer "Reviewer Name"
 python -m app.services.story_studio export-flow STORY_ID --out flow-bundle.json
 python -m app.services.story_studio import-flow-receipt STORY_ID receipt.json
 python -m app.services.story_studio qa STORY_ID
@@ -35,6 +36,8 @@ Creative profiles are loaded from `STORY_STUDIO_PROFILE_PATH` when set. The priv
 The platform package service drafts truthful metadata and current-format checks for YouTube long/Short, Facebook Reels, Instagram Reels, TikTok, Dailymotion, and Rumble. It requires explicit rights coverage for source/adaptation, visual, voice, and music/ambience; an imported reviewer QA report bound to the story, script text, and current master; reviewed audience settings; and a separately verified/reviewed variant for every selected platform. QA also samples actual first/final video frames and an audio segment with the bundled FFmpeg; a filename or asserted check alone cannot pass. Approval must match the exact master and package hashes. Even an approved package remains a manual handoff; publication and analytics account APIs are not configured by this project.
 
 Costs are kept in separate domains: API billing, Flow subscription credits, TTS, and local render time. Unknown costs remain unknown. Voice synthesis is not selected or invoked by storyboard drafting; voice casting, TTS provider setup, and narration QA remain explicit human/provider-specific work, with no silent voice fallback. Analytics imports accept local exports and preserve their source hashes; they do not connect to platform accounts.
+
+Every localized media variant must be registered separately with its media file, voice record, and SRT/VTT caption track. Caption, spoken-audio, voice-record, and story-target BCP-47 locales must match exactly after normalization, the sidecar must contain non-empty valid cues ending within the measured media duration, and a named fluent reviewer must attest to the caption text. The default caption policy also requires a named human check that the sidecar is burned into the video; the application records that attestation but does not infer it from a subtitle file. Registration does not translate text or synthesize speech. The quality gate requires a matching master-language variant; packaging requires an exact-media-hash caption/voice variant for every selected platform. An English caption file cannot approve a Malayalam audio variant. The external profile may configure a delivery destination and timezone; see [`media-delivery.md`](media-delivery.md). Archive receipts record the source and copy hashes, and an enabled delivery policy blocks final QA if a required copy is missing or unverified.
 
 ## One-story request
 

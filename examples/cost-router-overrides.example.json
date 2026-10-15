@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "cache_enabled": false,
+  "exceptional_authorized": false,
+  "candidates": [],
+  "note": "Copy to cost-router-overrides.json only after selecting providers, a permitted tier, and sourced current prices. No provider or price is assumed by this example."
+}
