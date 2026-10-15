@@ -25,6 +25,7 @@ def _facts(tmp_path):
     script = "A potter keeps a promise to a neighbor and learns to ask for help."
     master_asset = _asset(master)
     platform_assets = {}
+    platform_captions = {}
     for platform in DEFAULT_PLATFORMS:
         variant = tmp_path / f"{platform}.mp4"
         variant.write_bytes(f"approved-{platform}".encode())
@@ -32,6 +33,12 @@ def _facts(tmp_path):
             **_asset(variant),
             "variant_reviewed": True,
             "audience_reviewed": True,
+        }
+        platform_captions[platform] = {
+            **_asset(captions),
+            "locale_match": True,
+            "language_reviewed": True,
+            "media_sha256": platform_assets[platform]["sha256"],
         }
     return {
         "story_id": "story-01",
@@ -41,7 +48,7 @@ def _facts(tmp_path):
         "audience": {
             "age_min": 6,
             "age_max": 10,
-            "language": "English",
+            "language": "en",
             "made_for_kids": True,
             "reviewed": True,
         },
@@ -77,10 +84,12 @@ def _facts(tmp_path):
             "master_sha256": master_asset["sha256"],
         },
         "captions": _asset(captions),
+        "captions_locale_match": True,
         "master": master_asset,
         "duration_seconds": 60,
         "duration_verified": True,
         "platform_assets": platform_assets,
+        "platform_captions": platform_captions,
         "thumbnail_brief": "Show the potter and neighbor beside the repaired clay pot.",
         "chapters": [
             {"seconds": 0, "title": "The broken pot", "timing_verified": True},
@@ -163,6 +172,47 @@ def test_brand_tags_reject_urls_trends_and_claims_and_never_exceed_five(tmp_path
     assert all("guaranteed" not in tag.casefold() for tag in tags)
 
 
+def test_explicit_folktale_genres_make_compound_tags_without_broad_kids_tag(tmp_path):
+    facts = _facts(tmp_path)
+    facts["brand_hashtags"] = ["GenericBrand"]
+    facts["script_text"] = "A village storyteller learns to listen with patience."
+    facts["title"] = "The Patient Listener"
+    facts["moral_or_learning_intent"] = ""
+    facts["topics"] = [
+        "Tenali Raman",
+        "Indian Folktales",
+        "Moral Stories",
+        "Stories For Kids",
+        "Kids",
+    ]
+    facts["keywords"] = list(facts["topics"])
+    facts["fiction_taxonomy"] = [
+        "Indian Folktales",
+        "Moral Stories",
+        "Stories For Kids",
+    ]
+    facts["audience"] = {
+        **facts["audience"],
+        "age_min": 6,
+        "age_max": 10,
+    }
+    facts["qa_report"]["script_sha256"] = hashlib.sha256(
+        facts["script_text"].encode()
+    ).hexdigest()
+
+    package = package_story(facts, platforms=("youtube_long",))
+    tags = package["platforms"]["youtube_long"]["hashtags"]
+
+    assert tags == [
+        "#GenericBrand",
+        "#IndianFolktales",
+        "#MoralStories",
+        "#StoriesForKids",
+    ]
+    assert "#Kids" not in tags
+    assert "#MoralKids" not in tags
+
+
 def test_unverified_or_missing_evidence_stays_in_review_queue(tmp_path):
     facts = _facts(tmp_path)
     facts["source_evidence"][1]["rights_status"] = "unknown"
@@ -178,6 +228,26 @@ def test_unverified_or_missing_evidence_stays_in_review_queue(tmp_path):
     assert any("rights status" in item for item in package["review_queue"])
     assert any("final creative QA" in item for item in package["review_queue"])
     assert any("realistic AI-generated" in item for item in package["review_queue"])
+
+
+def test_caption_tracks_require_fluent_locale_match_and_variant_binding(tmp_path):
+    facts = _facts(tmp_path)
+    facts["captions_locale_match"] = False
+    facts["platform_captions"]["youtube_long"]["locale_match"] = False
+    facts["platform_captions"]["youtube_long"]["media_sha256"] = "0" * 64
+
+    package = package_story(facts, platforms=("youtube_long",))
+
+    assert (
+        package["required_approval"]["captions_locale_matches_story_and_audio"] is False
+    )
+    assert package["required_approval"]["platform_caption_tracks_verified"] is False
+    assert package["required_approval"]["captions_sha256_verified"] is True
+    assert package["readiness"]["required_checks_passed"] is False
+    assert any(
+        "fluent-reviewed" in item
+        for item in package["platforms"]["youtube_long"]["review_queue"]
+    )
 
 
 def test_flagged_title_hook_and_platform_length_are_not_silently_rewritten(tmp_path):

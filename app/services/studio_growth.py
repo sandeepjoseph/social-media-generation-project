@@ -78,6 +78,15 @@ _TREND_WORDS = {
     "like",
     "subscribe",
 }
+_BROAD_SINGLE_WORD_TOPICS = {
+    "child",
+    "children",
+    "kid",
+    "kids",
+    "moral",
+    "story",
+    "stories",
+}
 _VALID_RIGHTS = {"original", "licensed", "public_domain", "cleared", "not_used"}
 _RIGHTS_CATEGORIES = {
     "source": {
@@ -137,6 +146,16 @@ def _normal_topics(facts: dict[str, Any]) -> list[str]:
             "moral_or_learning_intent",
         )
     ).casefold()
+    audience = facts.get("audience")
+    audience_words: set[str] = set()
+    if isinstance(audience, dict):
+        age_max = audience.get("age_max")
+        if audience.get("made_for_kids") is True or (
+            isinstance(age_max, (int, float))
+            and not isinstance(age_max, bool)
+            and 0 < age_max <= 12
+        ):
+            audience_words.update({"child", "children", "kid", "kids"})
     candidates = [*_items(facts.get("topics")), *_items(facts.get("keywords"))]
     taxonomy_norm = {_normalize_words(value) for value in taxonomy_items}
     candidates.extend(taxonomy_items)
@@ -150,10 +169,19 @@ def _normal_topics(facts: dict[str, Any]) -> list[str]:
             continue
         # Topic/keyword suggestions need at least one meaningful word supported
         # by the story text; taxonomy values are structured project facts.
-        if _normalize_words(candidate) not in taxonomy_norm and not any(
-            len(word) >= 3 and re.search(rf"\b{re.escape(word)}\b", script_context)
-            for word in words
-        ):
+        if _normalize_words(candidate) not in taxonomy_norm:
+            meaningful_words = [word for word in words if word not in _STOP_WORDS]
+            if not any(
+                word in audience_words
+                or (
+                    len(word) >= 3
+                    and re.search(rf"\b{re.escape(word)}\b", script_context)
+                )
+                for word in meaningful_words
+            ):
+                continue
+        meaningful_words = [word for word in words if word not in _STOP_WORDS]
+        if len(words) == 1 and words[0] in _BROAD_SINGLE_WORD_TOPICS:
             continue
         accepted.append(candidate)
         if len(accepted) >= 10:
@@ -190,10 +218,29 @@ def _hashtags(facts: dict[str, Any]) -> list[str]:
             # story-supported topics, even if several aliases were supplied.
             break
 
+    taxonomy = facts.get("fiction_taxonomy")
+    taxonomy_items = (
+        [str(value) for value in taxonomy.values() if isinstance(value, str)]
+        if isinstance(taxonomy, dict)
+        else _items(taxonomy)
+    )
+    taxonomy_norm = {_normalize_words(value) for value in taxonomy_items}
     for topic in _normal_topics(facts):
-        words = [word for word in _HASHTAG_WORDS.split(topic.casefold()) if word]
-        words = [word for word in words if word not in _STOP_WORDS]
+        raw_words = [word for word in _HASHTAG_WORDS.split(topic.casefold()) if word]
+        meaningful_words = [word for word in raw_words if word not in _STOP_WORDS]
+        # Preserve story/stories in a meaningful genre phrase; stripping it
+        # turns labels such as "Moral Stories" into invented tags like #Moral.
+        preserve_story_word = len(raw_words) >= 2 and bool(meaningful_words)
+        words = [
+            word
+            for word in raw_words
+            if word not in _STOP_WORDS
+            or (preserve_story_word and word in {"story", "stories"})
+            or (_normalize_words(topic) in taxonomy_norm and word == "for")
+        ]
         if not words or any(word in _TREND_WORDS for word in words):
+            continue
+        if len(words) == 1 and words[0] in _BROAD_SINGLE_WORD_TOPICS:
             continue
         tag = "#" + "".join(word[:1].upper() + word[1:] for word in words)
         if tag.casefold() not in seen:
@@ -492,6 +539,7 @@ def package_story(
     asset_verification_cache: dict[tuple[str, str, int, int, int], bool] = {}
     master = _asset_status(story_facts.get("master"), asset_verification_cache)
     captions = _asset_status(story_facts.get("captions"), asset_verification_cache)
+    captions_locale_match = story_facts.get("captions_locale_match") is True
     rights_ok, rights_queue, rights_coverage = _rights_status(
         story_facts.get("source_evidence")
     )
@@ -543,7 +591,11 @@ def package_story(
     platform_assets_input = story_facts.get("platform_assets")
     if not isinstance(platform_assets_input, dict):
         platform_assets_input = {}
+    platform_captions_input = story_facts.get("platform_captions")
+    if not isinstance(platform_captions_input, dict):
+        platform_captions_input = {}
     platform_asset_status: dict[str, dict[str, Any]] = {}
+    platform_caption_status: dict[str, dict[str, Any]] = {}
     for platform in selected_platforms:
         if platform not in DEFAULT_PLATFORMS:
             raise ValueError(f"Unsupported platform: {platform}")
@@ -561,6 +613,24 @@ def package_story(
             else False
         )
         platform_asset_status[platform] = asset
+        caption = _asset_status(
+            platform_captions_input.get(platform), asset_verification_cache
+        )
+        caption_data = platform_captions_input.get(platform)
+        caption["locale_match"] = (
+            isinstance(caption_data, dict) and caption_data.get("locale_match") is True
+        )
+        caption["language_reviewed"] = (
+            isinstance(caption_data, dict)
+            and caption_data.get("language_reviewed") is True
+        )
+        caption["media_sha256"] = (
+            caption_data.get("media_sha256") if isinstance(caption_data, dict) else None
+        )
+        caption["bound_to_variant"] = caption["media_sha256"] == asset.get(
+            "sha256"
+        ) and bool(asset.get("sha256"))
+        platform_caption_status[platform] = caption
     queue: list[str] = []
     if not master["verified"]:
         queue.append(
@@ -569,6 +639,20 @@ def package_story(
     if not captions["verified"]:
         queue.append(
             "Provide a captions artifact path and matching SHA-256, or record a reviewed reason captions are unavailable."
+        )
+    if not captions_locale_match:
+        queue.append(
+            "Caption locale must be fluent-reviewed and match the story target and audio locale."
+        )
+    if not all(
+        item["verified"]
+        and item["locale_match"]
+        and item["language_reviewed"]
+        and item["bound_to_variant"]
+        for item in platform_caption_status.values()
+    ):
+        queue.append(
+            "Provide a fluent-reviewed caption track with matching locale for every selected localized media variant."
         )
     if not qa_ok:
         queue.append(
@@ -596,6 +680,7 @@ def package_story(
         description = _description(story_facts, platform, tags)
         platform_queue = list(queue)
         media_asset = platform_asset_status[platform]
+        caption_asset = platform_caption_status[platform]
         if not media_asset["verified"]:
             platform_queue.append(
                 f"Provide a verified platform-specific media asset for {platform}."
@@ -607,6 +692,15 @@ def package_story(
         if not media_asset["audience_reviewed"]:
             platform_queue.append(
                 f"Review audience and child-directed settings for {platform}."
+            )
+        if not (
+            caption_asset["verified"]
+            and caption_asset["locale_match"]
+            and caption_asset["language_reviewed"]
+            and caption_asset["bound_to_variant"]
+        ):
+            platform_queue.append(
+                f"Provide fluent-reviewed captions matching the story/audio locale and exact {platform} variant."
             )
         if _UNSUPPORTED_PROMISES.search(rendered_title) and not any(
             term.casefold() in script.casefold()
@@ -638,6 +732,7 @@ def package_story(
             "keywords": keywords,
             "chapters": platform_chapters,
             "media_asset": media_asset,
+            "caption_asset": caption_asset,
             "ready_for_manual_handoff": False,
             "thumbnail_brief": _text(story_facts.get("thumbnail_brief")) or None,
             "title_hook_promise_check": {
@@ -648,7 +743,7 @@ def package_story(
                 "script_evidence_available": bool(script),
                 "note": "This check flags wording for human review; it does not certify factual accuracy.",
             },
-            "captions_path": captions["path"],
+            "captions_path": caption_asset["path"],
             "platform_strategy": _PLATFORM_STRATEGY[platform],
             "review_queue": list(dict.fromkeys(platform_queue)),
             "documented_limits": PLATFORM_LIMITS.get(platform, {}),
@@ -676,6 +771,14 @@ def package_story(
             "qa_bound_to_story_script_and_master": qa_ok,
             "asset_sha256_verified": master["verified"],
             "captions_sha256_verified": captions["verified"],
+            "captions_locale_matches_story_and_audio": captions_locale_match,
+            "platform_caption_tracks_verified": all(
+                item["verified"]
+                and item["locale_match"]
+                and item["language_reviewed"]
+                and item["bound_to_variant"]
+                for item in platform_caption_status.values()
+            ),
             "source_and_music_rights_resolved": rights_ok,
             "rights_coverage": rights_coverage,
             "made_for_kids_reviewed": audience_reviewed,
