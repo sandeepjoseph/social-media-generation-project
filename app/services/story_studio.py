@@ -2517,7 +2517,10 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             {
                 **exported_shot,
                 "shot_id": str(shot.get("shot_id") or f"shot-{index + 1:03d}"),
-                "duration_seconds": shot.get("duration_seconds"),
+                "duration_seconds": shot.get(
+                    "provider_take_duration_seconds", shot.get("duration_seconds")
+                ),
+                "timeline_duration_seconds": shot.get("duration_seconds"),
                 "prompt": prompt,
                 "prompt_sha256": prompt_hash,
                 "roles": shot.get("roles", []),

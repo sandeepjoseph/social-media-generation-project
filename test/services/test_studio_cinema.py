@@ -182,6 +182,27 @@ def test_complete_performed_film_contract_passes():
     assert cinema.pilot_ids(board) == ["shot-0-0", "shot-0-1"]
 
 
+def test_native_export_preserves_provider_take_length_and_exact_prompt(configured):
+    store, sid, script, board = ready_story(configured)
+    shot = board["shots"][0]
+    original_prompt = shot["prompt"]
+    shot.update(
+        duration_seconds=5.375,
+        provider_take_duration_seconds=8,
+        native_editorial_plan={
+            "original_av_timing_preserved": True,
+            "retiming": False,
+            "voice_replacement": False,
+            "provenance_sha256": "a" * 64,
+        },
+    )
+    studio.ingest_storyboard_document(store, sid, board)
+    exported = studio.export_flow_bundle(store, sid)["shots"][0]
+    assert exported["duration_seconds"] == 8
+    assert exported["timeline_duration_seconds"] == 5.375
+    assert exported["prompt"] == original_prompt
+
+
 @pytest.mark.parametrize("seconds", [56, 170, 256, 359, 481, float("nan"), True, None])
 def test_short_or_unverified_full_episode_rejected(seconds):
     assert cinema.duration_issues(seconds, cinema.DEFAULTS, "master")
