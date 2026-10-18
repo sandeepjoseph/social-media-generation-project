@@ -152,3 +152,17 @@ python -m app.services.studio_native_movie storyboard.json selection-with-review
 CLI rendering is local and never publishes or alters accounts. Register CLI
 outputs in the Studio or reconcile them through the media archive before delivery.
 Commercial prompts and selections remain local.
+
+Before rendering English, prepare a separate readability candidate:
+
+```sh
+python -m app.services.studio_native_movie storyboard.json selection.json \
+  --prepare-readable-captions --output readable-selection.json
+```
+
+This combines short trailing cards when the complete line fits two 42-character
+lines and extends cards into existing pauses toward two seconds and 16 characters
+per second. It never changes words, source clips, voice timing or shot duration.
+Insufficient existing time is recorded as a hold for explicit editorial replanning.
+The new candidate revokes sequence approval and still needs actual caption and
+whole-movie review. Other languages require fluent-reviewed line breaks and timing.

@@ -112,6 +112,9 @@ def reviewed_caption_cues(entry, *, locale="en"):
 
 def validate_plan(board, plan, *, require_sequence_review=True):
     issues = []
+    readability = plan.get("caption_readability")
+    if isinstance(readability, dict) and readability.get("held"):
+        issues.append("Caption readability requires explicit editorial replanning")
     bundle_path = Path(plan.get("flow_bundle_path", ""))
     bundle = {}
     if not bundle_path.is_file() or sha(bundle_path) != plan.get(
@@ -281,7 +284,7 @@ def validate_plan(board, plan, *, require_sequence_review=True):
     ):
         issues.append("Selected plan is stale")
     if require_sequence_review:
-        review_path = Path(plan.get("sequence_review_path", ""))
+        review_path = Path(plan.get("sequence_review_path") or "")
         if not review_path.is_file() or sha(review_path) != plan.get(
             "sequence_review_sha256"
         ):
@@ -561,7 +564,32 @@ def main():
     parser.add_argument("--music", type=Path)
     parser.add_argument("--music-rights", type=Path)
     parser.add_argument("--caption-font", default="Arial")
+    parser.add_argument(
+        "--prepare-readable-captions",
+        action="store_true",
+        help="Write a new English caption-plan JSON candidate; do not render or approve",
+    )
     args = parser.parse_args()
+    if args.prepare_readable_captions:
+        from app.services.studio_caption_readability import prepare_caption_plan
+
+        if args.output.exists():
+            raise FileExistsError("Preserve the prior caption-plan version")
+        record = prepare_caption_plan(
+            json.loads(args.board.read_text()), json.loads(args.selection.read_text())
+        )
+        args.output.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+        print(
+            json.dumps(
+                {
+                    "candidate_plan": str(args.output),
+                    "publication_allowed": False,
+                    "held": record["caption_readability"]["held"],
+                },
+                indent=2,
+            )
+        )
+        return
     record = build_native_movie(
         args.board,
         args.selection,
