@@ -1,3 +1,5 @@
+> **Customized fork:** This is the inherited upstream guide. For the current Director Studio movie workflow, products, architecture and setup, read [README.md](README.md). Upstream provider/automation listings do not establish configured production capabilities.
+
 <div align="center">
 
 # MoneyPrinterTurbo 💸
