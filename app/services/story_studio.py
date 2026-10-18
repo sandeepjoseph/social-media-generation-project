@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.utils import utils
+from app.services import studio_cinema as cinema
 
 PHASES = (
     "research",
@@ -242,6 +243,23 @@ def load_director_profile(
             )
     template = json.loads(template_path.read_text(encoding="utf-8"))
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    learning = {"revision": 0, "entries": []}
+    learning_path = profile.get("private_learning_log")
+    if learning_path:
+        learning_file = Path(learning_path).expanduser().resolve()
+        if learning_file.is_relative_to(repo_root):
+            raise ValueError(
+                "production learning must stay outside the public repository"
+            )
+        learning = json.loads(learning_file.read_text(encoding="utf-8"))
+        if not isinstance(learning, dict) or not isinstance(
+            learning.get("entries"), list
+        ):
+            raise ValueError("production learning log needs an entries array")
+    profile["learning_rules"] = {
+        "revision": learning.get("revision", 0),
+        "applied": [r for r in learning["entries"] if r.get("status") == "applied"],
+    }
     asset_records = []
     for asset_id, raw in registry.get("assets", {}).items():
         if not isinstance(raw, dict):
@@ -271,6 +289,7 @@ def load_director_profile(
     )
     if profile_id not in (None, resolved_id):
         raise ValueError("requested private profile identifier does not match")
+    cinema.policy_for(profile)  # Reject invalid numeric contracts at intake.
     return {
         **profile,
         "profile_sha256": _digest_bytes(combined.encode("utf-8")),
@@ -301,6 +320,10 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "external",
             "media_delivery",
             "caption_policy",
+            "cinema_policy",
+            "template_revision",
+            "production_build",
+            "learning_rules",
         )
     }
 
@@ -536,6 +559,10 @@ class StudioStore:
         if not title or not premise:
             raise ValueError("request requires a title and premise/story_input")
         profile = load_director_profile(request.get("profile_id"))
+        profile["production_build"] = cinema.implementation_identity(
+            Path(utils.root_dir())
+        )
+        policy = cinema.policy_for(profile)
         defaults = profile.get("creative_defaults", {})
         audience_defaults = (
             defaults.get("initial_audience", {}) if isinstance(defaults, dict) else {}
@@ -550,6 +577,9 @@ class StudioStore:
             or duration <= 0
         ):
             raise ValueError("target_duration_seconds must be a positive number")
+        duration_errors = cinema.duration_issues(duration, policy, "requested")
+        if duration_errors and request.get("legacy_import") is not True:
+            raise ValueError("; ".join(duration_errors))
         audience = request.get("audience")
         if not isinstance(audience, dict):
             audience = {}
@@ -1091,6 +1121,24 @@ class StudioStore:
         )
         if not shot or shot.get("prompt_sha256") != prompt_hash:
             raise ValueError("receipt prompt does not match the exported shot bundle")
+        policy, board = _cinema_context(self, story_id)
+        if policy:
+            measured = video_duration_seconds(asset)
+            timeline_duration = shot.get(
+                "timeline_duration_seconds", shot["duration_seconds"]
+            )
+            if measured is None or abs(measured - timeline_duration) > 0.25:
+                raise ValueError(
+                    "cinema shot duration must match the reviewed storyboard"
+                )
+        if (
+            policy
+            and shot_id not in cinema.pilot_ids(board["document"])
+            and not _pilot_passed(self, story_id)
+        ):
+            raise ValueError(
+                "accept the two-character dialogue pilot before bulk production receipts"
+            )
         expected = {
             item["shot_id"]: item["prompt_sha256"] for item in manifest.get("shots", [])
         }
@@ -1241,6 +1289,189 @@ def validate_screenplay(document: dict[str, Any]) -> list[str]:
     return issues
 
 
+def profile_status(store: StudioStore, story_id: str) -> dict[str, Any]:
+    request = store.story(story_id)["request"]
+    saved = _story_profile(request)
+    current = load_director_profile(request.get("profile_id"))
+    build = cinema.implementation_identity(Path(utils.root_dir()))
+    return {
+        "current_template_revision": current.get("template_revision", "legacy"),
+        "saved_template_revision": saved.get("template_revision", "legacy"),
+        "current_profile_sha256": current["profile_sha256"],
+        "saved_profile_sha256": saved.get("profile_sha256"),
+        "current_build": build,
+        "saved_build": saved.get("production_build", {}),
+        "cinema_required": bool(cinema.policy_for(current)),
+        "needs_replan": (
+            current["profile_sha256"] != saved.get("profile_sha256")
+            or build["implementation_sha256"]
+            != saved.get("production_build", {}).get("implementation_sha256")
+        ),
+    }
+
+
+def refresh_story_profile(store: StudioStore, story_id: str) -> dict[str, Any]:
+    """Explicitly replan against current defaults without changing source media."""
+    story = store.story(story_id)
+    profile = load_director_profile(story["request"].get("profile_id"))
+    profile["production_build"] = cinema.implementation_identity(Path(utils.root_dir()))
+    request = {
+        **story["request"],
+        "profile_snapshot": _profile_snapshot(profile),
+        "profile_snapshot_sha256": profile["profile_sha256"],
+    }
+    duration = story["requested_duration_seconds"]
+    if cinema.duration_issues(duration, cinema.policy_for(profile), "requested"):
+        duration = profile.get("creative_defaults", {}).get(
+            "target_duration_seconds", 420
+        )
+    request["target_duration_seconds"] = duration
+    now = time.time()
+    with store.transaction() as conn:
+        if conn.execute(
+            "SELECT 1 FROM story_phases WHERE story_id=? AND status='running'",
+            (story_id,),
+        ).fetchone():
+            raise RuntimeError(
+                "finish or explicitly recover the active phase before replanning"
+            )
+        conn.execute(
+            "UPDATE stories SET request_json=?, requested_duration_seconds=?,updated_at=? WHERE story_id=?",
+            (_json(request), int(duration), now, story_id),
+        )
+        store._invalidate_downstream_in_transaction(conn, story_id, "research", now)
+    store.add_artifact(
+        story_id,
+        "template_refresh",
+        document={
+            "old_profile_sha256": story["request"].get("profile_snapshot_sha256"),
+            "new_profile_sha256": profile["profile_sha256"],
+            "production_build": profile["production_build"],
+            "previous_duration_seconds": story["requested_duration_seconds"],
+            "new_duration_seconds": duration,
+            "creative_and_later_phases_invalidated": True,
+            "source_media_preserved": True,
+        },
+    )
+    return profile_status(store, story_id)
+
+
+def record_learning_rule(
+    *, text: str, criterion_id: str, status: str = "experiment"
+) -> dict:
+    """Save owner-directed lessons locally. Experiments never become defaults."""
+    profile = load_director_profile()
+    configured = profile.get("private_learning_log")
+    if (
+        not configured
+        or status not in {"applied", "experiment"}
+        or not text.strip()
+        or not criterion_id.strip()
+    ):
+        raise ValueError(
+            "learning needs an external log, criterion, text and applied/experiment status"
+        )
+    path = Path(configured).expanduser().resolve()
+    lock = path.with_name(path.name + ".lock")
+    try:
+        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            "another learning update is active; retry after it finishes"
+        ) from exc
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        entry = {
+            "id": uuid.uuid4().hex,
+            "criterion_id": criterion_id.strip(),
+            "rule": text.strip(),
+            "status": status,
+            "recorded_at_utc": time.time(),
+        }
+        document["entries"].append(entry)
+        document["revision"] = int(document.get("revision", 0)) + 1
+        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+        temporary.write_text(
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        os.close(lock_fd)
+        lock.unlink()
+
+    return entry
+
+
+def _cinema_context(store: StudioStore, story_id: str):
+    profile = _story_profile(store.story(story_id)["request"])
+    board = store.latest_artifact(story_id, "storyboard") or {}
+    return cinema.policy_for(profile), board
+
+
+def import_performance_pilot_review(
+    store: StudioStore, story_id: str, review: dict
+) -> dict:
+    policy, board = _cinema_context(store, story_id)
+    if not policy or not board:
+        raise ValueError("a cinema storyboard is required before pilot review")
+    issues = cinema.performance_review_issues(
+        review,
+        board["document"],
+        store.flow_receipts(story_id),
+        policy=policy,
+        storyboard_sha256=board["sha256"],
+        pilot=True,
+    )
+    if issues:
+        raise ValueError("; ".join(issues))
+    if review.get("story_id") != story_id:
+        raise ValueError("pilot review must identify the current story")
+    return store.add_artifact(story_id, "performance_pilot_review", document=review)
+
+
+def _pilot_passed(store: StudioStore, story_id: str) -> bool:
+    policy, board = _cinema_context(store, story_id)
+    if not policy:
+        return True
+    review = store.latest_artifact(story_id, "performance_pilot_review")
+    receipts = store.flow_receipts(story_id)
+    if board:
+        for receipt in receipts:
+            if receipt["shot_id"] in cinema.pilot_ids(board["document"]):
+                path = Path(receipt["asset_path"])
+                if not path.is_file() or digest_file(path) != receipt["asset_sha256"]:
+                    return False
+                shot = next(
+                    s
+                    for s in board["document"]["shots"]
+                    if s["shot_id"] == receipt["shot_id"]
+                )
+                measured = video_duration_seconds(path)
+                if measured is None or abs(measured - shot["duration_seconds"]) > 0.25:
+                    return False
+    return bool(
+        board
+        and review
+        and not cinema.performance_review_issues(
+            review["document"],
+            board["document"],
+            receipts,
+            policy=policy,
+            storyboard_sha256=board["sha256"],
+            pilot=True,
+        )
+    )
+
+
+def _require_current_cinema_profile(store: StudioStore, story_id: str) -> None:
+    status = profile_status(store, story_id)
+    if status["cinema_required"] and status["needs_replan"]:
+        raise ValueError(
+            "template or implementation changed; apply latest template and replan"
+        )
+
+
 def quality_report(
     store: StudioStore, story_id: str, *, master_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -1301,6 +1532,31 @@ def quality_report(
     measured_duration = (
         video_duration_seconds(master_path) if current_master_sha else None
     )
+    policy, cinema_board = _cinema_context(store, story_id)
+    versions = profile_status(store, story_id)
+    if versions["cinema_required"] and versions["needs_replan"]:
+        issues.append("cinema:template_or_implementation_changed_replan_required")
+    if policy:
+        issues.extend(cinema.duration_issues(measured_duration, policy, "master"))
+        if screenplay:
+            issues.extend(cinema.screenplay_issues(screenplay["document"], policy))
+        if storyboard and screenplay:
+            issues.extend(
+                cinema.storyboard_issues(
+                    storyboard["document"], screenplay["document"], policy
+                )
+            )
+        if not _pilot_passed(store, story_id):
+            issues.append("cinema:dialogue_pilot_not_accepted")
+        issues.extend(
+            cinema.performance_review_issues(
+                ((review or {}).get("document") or {}).get("performance_review"),
+                (cinema_board or {}).get("document", {}),
+                store.flow_receipts(story_id),
+                policy=policy,
+                storyboard_sha256=cinema_board.get("sha256", ""),
+            )
+        )
     if current_master_sha is None:
         issues.append("current_master_file_missing")
     else:
@@ -1413,6 +1669,8 @@ def quality_report(
         "duration_seconds": measured_duration,
         "duration_verified": measured_duration is not None,
         "audience": story["request"].get("audience", {}),
+        "cinema_policy": policy,
+        "production_version": versions,
         "review_required": [
             "age fit",
             "fiction/factual framing",
@@ -1467,6 +1725,20 @@ def import_quality_review(
         raise ValueError(
             "QA report needs a named reviewer and passing decode, visual, and audio checks"
         )
+    policy, board = _cinema_context(store, story_id)
+    if policy:
+        issues = cinema.performance_review_issues(
+            report.get("performance_review"),
+            board.get("document", {}),
+            store.flow_receipts(story_id),
+            policy=policy,
+            storyboard_sha256=board.get("sha256", ""),
+        )
+        issues.extend(
+            cinema.duration_issues(video_duration_seconds(master), policy, "master")
+        )
+        if issues:
+            raise ValueError("; ".join(issues))
     artifact = store.add_artifact(
         story_id,
         "quality_review",
@@ -1702,6 +1974,7 @@ def request_screenplay_draft(
     from app.services.llm import _call_generate_response
 
     story = store.story(story_id)
+    _require_current_cinema_profile(store, story_id)
     evidence = store.evidence(story_id)
     if not evidence:
         raise RuntimeError(
@@ -1736,6 +2009,9 @@ def request_screenplay_draft(
         },
         "evidence": evidence,
         "production_profile": {
+            "cinema_contract": cinema.policy_for(profile),
+            "production_build": profile.get("production_build", {}),
+            "learning_rules": profile.get("learning_rules", {}),
             "profile_id": profile["profile_id"],
             "profile_snapshot_sha256": profile["profile_sha256"],
             "profile_visibility": profile.get("profile_visibility", "public_generic"),
@@ -1765,6 +2041,32 @@ def request_screenplay_draft(
             "Include all speaking roles and narrator roles explicitly.",
         ],
     }
+    if cinema.policy_for(profile):
+        prompt["output_contract"]["roles"][0].update(
+            {
+                "kind": "character or narrator",
+                "voice_id": "stable original synthetic character voice identifier",
+            }
+        )
+        prompt["output_contract"]["scenes"][0].update(
+            {
+                "story_beat": "setup/problem/attempt/turn/resolution",
+                "estimated_duration_seconds": 40,
+                "dramatic_purpose": "what changes because of this scene",
+                "action": "observable character decisions and physical performance",
+            }
+        )
+        prompt["output_contract"]["scenes"][0]["lines"][0]["line_id"] = (
+            "unique stable line id"
+        )
+        prompt["constraints"].extend(
+            [
+                "Write a film performed by characters. The narrator must not deliver character dialogue or explain every visible action.",
+                "Use at least two speaking characters with stable voice_id and kind=character; narrator kind=narrator is optional. Respect the cinema_contract ratios and full-episode duration.",
+                "Include setup, problem, attempt, turn and resolution. Earn the duration with decisions, reactions and consequences, never repeated shots, stretched stills, recaps or filler.",
+                "Use short natural lines fitting an eight-second native A/V take, including acting and pause handles; each line has a unique line_id. Plan silence for listening and reactions.",
+            ]
+        )
     snapshot = snapshot_job_config(story_id, app_config)
     prompt_text = json.dumps(prompt, ensure_ascii=False)
     creative_phase = store.run_phase(
@@ -1793,6 +2095,8 @@ def request_screenplay_draft(
     except json.JSONDecodeError as exc:
         raise ValueError("model returned invalid screenplay JSON") from exc
     issues = validate_screenplay(document)
+    if not issues:
+        issues.extend(cinema.screenplay_issues(document, cinema.policy_for(profile)))
     if issues:
         raise ValueError("screenplay failed structure checks: " + "; ".join(issues))
     screenplay_phase = store.run_phase(
@@ -1824,7 +2128,15 @@ def ingest_screenplay_document(
     *,
     source: str = "manual import",
 ) -> dict[str, Any]:
+    _require_current_cinema_profile(store, story_id)
     issues = validate_screenplay(document)
+    if not issues:
+        issues.extend(
+            cinema.screenplay_issues(
+                document,
+                cinema.policy_for(_story_profile(store.story(story_id)["request"])),
+            )
+        )
     if issues:
         raise ValueError("screenplay failed structure checks: " + "; ".join(issues))
     evidence = store.evidence(story_id)
@@ -1871,6 +2183,7 @@ def ingest_storyboard_document(
     *,
     source: str = "manual import",
 ) -> dict[str, Any]:
+    _require_current_cinema_profile(store, story_id)
     issues = validate_storyboard(store, story_id, document)
     if issues:
         raise ValueError("storyboard failed structure checks: " + "; ".join(issues))
@@ -1963,6 +2276,10 @@ def validate_storyboard(store: StudioStore, story_id: str, document: Any) -> lis
             not isinstance(role_id, str) or role_id not in role_ids for role_id in roles
         ):
             issues.append(f"{shot_id or label} references an unknown screenplay role")
+    if not issues:
+        issues.extend(
+            cinema.storyboard_issues(document, screenplay, cinema.policy_for(profile))
+        )
     return issues
 
 
@@ -1972,6 +2289,7 @@ def request_storyboard_draft(
     """Draft a structured shot plan with one explicitly requested routed LLM call."""
     from app.services.llm import _call_generate_response
 
+    _require_current_cinema_profile(store, story_id)
     screenplay_artifact = store.latest_artifact(story_id, "screenplay")
     if (
         not screenplay_artifact
@@ -2025,6 +2343,9 @@ def request_storyboard_draft(
         },
         "screenplay": screenplay_artifact["document"],
         "production_profile": {
+            "cinema_contract": cinema.policy_for(profile),
+            "production_build": profile.get("production_build", {}),
+            "learning_rules": profile.get("learning_rules", {}),
             "profile_id": profile["profile_id"],
             "profile_snapshot_sha256": profile["profile_sha256"],
             "profile_visibility": profile.get("profile_visibility", "public_generic"),
@@ -2043,6 +2364,34 @@ def request_storyboard_draft(
             "Narration and voice selection are not automated by this storyboard request; preserve voice intent for later human/provider review.",
         ],
     }
+    if cinema.policy_for(profile):
+        contract["shots"][0].update(
+            {
+                "speech_mode": "native_dialogue / character_action / narration / establishing",
+                "dialogue": {
+                    "line_id": "exact screenplay line_id",
+                    "speaker_id": "screenplay role_id",
+                    "text": "verbatim scripted line",
+                    "voice_id": "that role's stable voice_id",
+                },
+                "visible_speaker_id": "sole speaking character for native dialogue",
+                "audio_pipeline": "preserve_native_av for native dialogue",
+                "action_start": "actor blocking and prop state at entry",
+                "action_end": "physical action outcome, not camera-only movement",
+                "emotional_direction": "objective, subtext and reaction",
+                "eyeline": "motivated gaze and scene partner",
+                "costume_state": "continuity with character bible",
+                "continuity": "screen axis, prop, light and time anchors",
+            }
+        )
+        prompt["constraints"].extend(
+            [
+                "Meet the cinema_contract: full episode duration, dialogue and performance fractions. Deliver every script line exactly once in its own scene; do not invent, paraphrase or omit spoken lines.",
+                "For native_dialogue, select a speech-capable model with native_speech and lip_sync capabilities, one visible speaking character, exact words, assigned voice, unobstructed lips, motivated acting and preserved original audio/video timing.",
+                "No replacing native dialogue with a narrator or unrelated TTS. No speed change, looping, freeze frames or photo pans to meet duration. Silent reaction/action takes may use cheaper capable generation.",
+                "Reserve a two-character dialogue pilot before bulk spending. Cheap silent video is not a fallback for failed dialogue. Keep generation prompts compact and reuse approved actor/set references.",
+            ]
+        )
     prompt_text = json.dumps(prompt, ensure_ascii=False)
     snapshot = snapshot_job_config(story_id, app_config)
     inputs = {
@@ -2099,6 +2448,7 @@ def request_storyboard_draft(
 
 
 def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
+    _require_current_cinema_profile(store, story_id)
     if store.phase(story_id, "storyboard")["status"] != "complete":
         raise RuntimeError(
             "complete and review the storyboard phase before exporting Flow prompts"
@@ -2111,6 +2461,17 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         raise ValueError("storyboard has no shots")
     bundle_shots = []
     profile = _story_profile(store.story(story_id)["request"])
+    policy = cinema.policy_for(profile)
+    screenplay = store.latest_artifact(story_id, "screenplay")
+    if policy:
+        issues = cinema.screenplay_issues(
+            (screenplay or {}).get("document", {}), policy
+        )
+        issues.extend(validate_storyboard(store, story_id, board["document"]))
+        if issues:
+            raise ValueError("cinema preproduction rejected: " + "; ".join(issues))
+    pilots = cinema.pilot_ids(board["document"]) if policy else []
+    pilot_accepted = _pilot_passed(store, story_id)
     for asset in profile.get("approved_assets", []):
         asset_path = Path(str(asset.get("path", "")))
         if not asset_path.is_file() or digest_file(asset_path) != asset.get("sha256"):
@@ -2159,7 +2520,10 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             {
                 **exported_shot,
                 "shot_id": str(shot.get("shot_id") or f"shot-{index + 1:03d}"),
-                "duration_seconds": shot.get("duration_seconds"),
+                "duration_seconds": shot.get(
+                    "provider_take_duration_seconds", shot.get("duration_seconds")
+                ),
+                "timeline_duration_seconds": shot.get("duration_seconds"),
                 "prompt": prompt,
                 "prompt_sha256": prompt_hash,
                 "roles": shot.get("roles", []),
@@ -2171,6 +2535,9 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
                     "amount": None,
                 },
                 "handoff": "manual_browser_only",
+                "generation_allowed": shot.get("new_generation_required", True)
+                is not False
+                and (not policy or pilot_accepted or shot["shot_id"] in pilots),
             }
         )
     bundle = {
@@ -2181,6 +2548,15 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         "profile_visibility": profile.get("profile_visibility", "public_generic"),
         "storyboard_sha256": board["sha256"],
         "status": "manual_generation_required",
+        "cinema_policy": policy,
+        "cinema_policy_sha256": cinema.digest(policy) if policy else None,
+        "production_build": profile.get("production_build", {}),
+        "template_revision": profile.get("template_revision"),
+        "dialogue_pilot": {
+            "shot_ids": pilots,
+            "accepted": pilot_accepted,
+            "bulk_generation_hold": bool(policy and not pilot_accepted),
+        },
         "approved_reference_assets": list(archived_assets.values()),
         "shots": bundle_shots,
         "provider_account_check_required": "hold_without_retry_or_account_switch",
@@ -2545,6 +2921,28 @@ def _cli() -> int:
     sub.add_parser("list", help="list stories and phase statuses")
     show = sub.add_parser("show", help="show a story status")
     show.add_argument("story_id")
+    versions = sub.add_parser(
+        "profile-status", help="compare frozen project and current production template"
+    )
+    versions.add_argument("story_id")
+    refresh = sub.add_parser(
+        "refresh-profile",
+        help="apply latest template, replan and revoke prior approvals",
+    )
+    refresh.add_argument("story_id")
+    pilot = sub.add_parser(
+        "import-performance-pilot", help="import two-character A/V pilot review"
+    )
+    pilot.add_argument("story_id")
+    pilot.add_argument("review_json")
+    lesson = sub.add_parser(
+        "record-learning", help="save an external reusable rule or unproven experiment"
+    )
+    lesson.add_argument("--criterion", required=True)
+    lesson.add_argument("--text", required=True)
+    lesson.add_argument(
+        "--status", choices=["applied", "experiment"], default="experiment"
+    )
     research = sub.add_parser(
         "research-request", help="write a manual research request card"
     )
@@ -2676,6 +3074,20 @@ def _cli() -> int:
         ]
     elif args.command == "show":
         result = store.story(args.story_id)
+    elif args.command == "profile-status":
+        result = profile_status(store, args.story_id)
+    elif args.command == "refresh-profile":
+        result = refresh_story_profile(store, args.story_id)
+    elif args.command == "import-performance-pilot":
+        result = import_performance_pilot_review(
+            store,
+            args.story_id,
+            json.loads(Path(args.review_json).read_text(encoding="utf-8")),
+        )
+    elif args.command == "record-learning":
+        result = record_learning_rule(
+            text=args.text, criterion_id=args.criterion, status=args.status
+        )
     elif args.command == "research-request":
         result = research_request(store.story(args.story_id))
         Path(args.out).write_text(_json(result) + "\n", encoding="utf-8")

@@ -22,7 +22,13 @@ from app.services.story_studio import (
     approve_package,
     research_request,
     validate_screenplay,
+    profile_status,
+    refresh_story_profile,
+    record_learning_rule,
+    import_performance_pilot_review,
 )
+from app.services.studio_cinema import policy_for
+from app.services.studio_native_movie import build_native_movie
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
 
@@ -34,6 +40,39 @@ st.caption(
 )
 store = StudioStore()
 active_profile = load_director_profile()
+active_cinema = policy_for(active_profile)
+if active_cinema:
+    st.info(
+        f"Children's movie mode · ages 6–10 by default · full episodes {active_cinema['full_episode_min_seconds'] / 60:g}–{active_cinema['full_episode_max_seconds'] / 60:g} minutes · characters act and speak · lip-sync pilot required · Shorts are separate companions."
+    )
+    st.caption(
+        f"Production template {active_profile.get('template_revision', 'unversioned')} · applied learning revision {active_profile.get('learning_rules', {}).get('revision', 0)}"
+    )
+    with st.expander("Production standards and saved improvements"):
+        st.json(active_cinema)
+        st.json(active_profile.get("learning_rules", {}))
+        with st.form("production_learning"):
+            learned_criterion = st.text_input(
+                "Acceptance criterion",
+                placeholder="e.g. dialogue, lip-sync, acting, duration, continuity",
+            )
+            learned_rule = st.text_area("Improvement for future productions")
+            learned_applied = st.checkbox(
+                "Apply this instruction to future projects", value=False
+            )
+            if st.form_submit_button("Save production learning"):
+                try:
+                    record_learning_rule(
+                        text=learned_rule,
+                        criterion_id=learned_criterion,
+                        status="applied" if learned_applied else "experiment",
+                    )
+                    st.success(
+                        "Saved locally. New projects load applied rules; experiments remain unproven."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 st.caption(
     f"Creative profile: {active_profile['profile_id']} · snapshot {active_profile['profile_sha256'][:12]} · {active_profile['profile_visibility']}"
 )
@@ -79,8 +118,8 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
             )
             duration = st.number_input(
                 "Target duration (seconds)",
-                min_value=60,
-                max_value=3600,
+                min_value=int(active_cinema.get("full_episode_min_seconds", 60)),
+                max_value=int(active_cinema.get("full_episode_max_seconds", 3600)),
                 value=duration_default,
                 step=30,
             )
@@ -179,6 +218,17 @@ options = {
 selected_label = st.selectbox("Project", list(options))
 story_id = options[selected_label]
 story = store.story(story_id)
+version_status = profile_status(store, story_id)
+if version_status["cinema_required"] and version_status["needs_replan"]:
+    st.warning(
+        "This project's frozen template is older than the current production standards. Generation and release are held until it is replanned. Existing source media stays preserved."
+    )
+    if st.button("Apply latest template and replan this project"):
+        try:
+            refresh_story_profile(store, story_id)
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
 st.caption(
     f"Target {story['requested_duration_seconds']} seconds · current state is persisted in SQLite"
 )
@@ -232,6 +282,10 @@ with tab_research:
         st.dataframe(evidence, use_container_width=True)
 
 with tab_creative:
+    if active_cinema:
+        st.info(
+            "The JSON below illustrates the shape only. A complete film needs two speaking characters, the full dramatic arc, 6–8 minutes of meaningful scenes and the required character-performance fields; the validators enforce the complete package."
+        )
     st.caption(
         "The API call below is explicit and uses the existing MoneyPrinter provider configuration and new-job cost-router snapshot. It drafts a screenplay only; editorial approval remains required."
     )
@@ -241,9 +295,11 @@ with tab_creative:
                 "schema_version": 1,
                 "roles": [
                     {
-                        "role_id": "narrator",
-                        "name": "Narrator",
-                        "function": "guide",
+                        "role_id": "character-a" if active_cinema else "narrator",
+                        "name": "First character" if active_cinema else "Narrator",
+                        "kind": "character" if active_cinema else "narrator",
+                        "voice_id": "original-character-a",
+                        "function": "pursues the scene objective",
                         "voice_direction": "",
                     }
                 ],
@@ -252,7 +308,20 @@ with tab_creative:
                         "scene_id": "scene-01",
                         "setting": "",
                         "visual_intent": "",
-                        "lines": [{"role_id": "narrator", "text": "", "delivery": ""}],
+                        "dramatic_purpose": "",
+                        "action": "",
+                        "story_beat": "setup",
+                        "estimated_duration_seconds": 60,
+                        "lines": [
+                            {
+                                "line_id": "line-01",
+                                "role_id": "character-a"
+                                if active_cinema
+                                else "narrator",
+                                "text": "",
+                                "delivery": "",
+                            }
+                        ],
                     }
                 ],
             },
@@ -322,6 +391,25 @@ with tab_creative:
             st.error(f"Storyboard draft failed: {exc}")
 
 with tab_flow:
+    if active_cinema:
+        st.info(
+            "Generate and review the two designated native-dialogue pilot shots first. Bulk generation stays held until the exact pilot clips pass wording, speaker identity, acting and full-utterance lip-sync review. A silent or narrator-only take cannot substitute."
+        )
+        pilot_file = st.file_uploader(
+            "Two-character performance pilot review JSON",
+            type=["json"],
+            key="cinema_pilot",
+        )
+        if pilot_file and st.button("Import reviewed performance pilot"):
+            try:
+                import_performance_pilot_review(
+                    store, story_id, json.loads(pilot_file.getvalue())
+                )
+                st.success(
+                    "Pilot accepted for this exact storyboard and media. Re-export the Flow bundle to release its remaining shots."
+                )
+            except Exception as exc:
+                st.error(str(exc))
     st.warning(
         "Flow uses a documented manual browser handoff. This page does not automate the account, submit jobs, or assume costs."
     )
@@ -363,6 +451,125 @@ with tab_qa:
     st.info(
         f"Captions must be fluent-reviewed and match the story target and spoken audio locale ({story_locale}). English captions cannot approve a Malayalam variant."
     )
+    if active_cinema:
+        with st.expander("Assemble reviewed character performances"):
+            st.caption(
+                "Uses each reviewed moving scene in story order with its original actor audio. "
+                "A review cut allows full-sequence checks before the final music mix. "
+                "Rendering never approves publication."
+            )
+            native_board = st.text_input(
+                "Reviewed storyboard file", key=f"native_board_{story_id}"
+            )
+            native_selection = st.text_input(
+                "Reviewed scene selection file", key=f"native_selection_{story_id}"
+            )
+            native_output = st.text_input(
+                "New movie output path (.mp4)", key=f"native_output_{story_id}"
+            )
+            native_review = st.checkbox(
+                "Build a review cut before the final sound mix",
+                value=True,
+                key=f"native_review_{story_id}",
+            )
+            native_font = st.text_input(
+                "Verified caption font", value="Arial", key=f"native_font_{story_id}"
+            )
+            native_music = st.text_input(
+                "Original or licensed music file (final mix)",
+                key=f"native_music_{story_id}",
+            )
+            native_rights = st.text_input(
+                "Music rights evidence file (final mix)",
+                key=f"native_rights_{story_id}",
+            )
+            if st.button(
+                "Build movie for review",
+                disabled=not all([native_board, native_selection, native_output]),
+            ):
+                try:
+                    if profile_status(store, story_id)["needs_replan"]:
+                        raise ValueError(
+                            "Apply the latest production template and explicitly replan before assembling"
+                        )
+                    current_board = store.latest_artifact(story_id, "storyboard")
+                    supplied_board = json.loads(Path(native_board).read_text())
+                    if not current_board or supplied_board != current_board["document"]:
+                        raise ValueError("Use the current story's reviewed storyboard")
+                    selected = json.loads(Path(native_selection).read_text())
+                    if (
+                        selected.get("storyboard_artifact_sha256")
+                        != current_board["sha256"]
+                    ):
+                        raise ValueError(
+                            "Scene selection must bind this exact storyboard artifact"
+                        )
+                    if selected.get("locale") != story_locale:
+                        raise ValueError(
+                            "Movie audio and captions must match this story's language"
+                        )
+                    receipts = {r["shot_id"]: r for r in store.flow_receipts(story_id)}
+                    for entry in selected.get("shots", []):
+                        slot = next(
+                            (
+                                s
+                                for s in supplied_board["shots"]
+                                if s["shot_id"] == entry["shot_id"]
+                            ),
+                            {},
+                        )
+                        if slot.get(
+                            "speech_mode"
+                        ) == "native_dialogue" and receipts.get(
+                            entry["shot_id"], {}
+                        ).get("asset_sha256") != entry.get("sha256"):
+                            raise ValueError(
+                                "Import the exact reviewed native performance receipt before assembly"
+                            )
+                    with st.spinner("Assembling reviewed scenes and matching captions"):
+                        result = build_native_movie(
+                            native_board,
+                            native_selection,
+                            native_output,
+                            review_cut=native_review,
+                            music=native_music or None,
+                            music_rights=native_rights or None,
+                            caption_font=native_font,
+                        )
+                    delivery = []
+                    for media in [result["master"], result["source_native_master"]]:
+                        artifact = store.add_artifact(
+                            story_id,
+                            "generated_video",
+                            path=media["path"],
+                            provenance={
+                                "source": "generated",
+                                "locale": story_locale,
+                                "publication_allowed": False,
+                            },
+                        )
+                        delivery.append(artifact["provenance"].get("delivery_archive"))
+                    for captions in result["captions"]:
+                        artifact = store.add_artifact(
+                            story_id,
+                            "caption_track",
+                            path=captions["path"],
+                            provenance={
+                                "locale": story_locale,
+                                "publication_allowed": False,
+                            },
+                        )
+                        delivery.append(artifact["provenance"].get("delivery_archive"))
+                    result["delivery_archive"] = delivery
+                    store.add_artifact(
+                        story_id, "native_movie_candidate", document=result
+                    )
+                    st.success(
+                        "Movie saved for audiovisual review. Publication remains subject to the Quality checks."
+                    )
+                    st.video(result["master"]["path"])
+                except Exception as exc:
+                    st.error(str(exc))
     qa_master = st.text_input(
         "Assembled master for hash-bound QA", key=f"qa_master_{story_id}"
     )
