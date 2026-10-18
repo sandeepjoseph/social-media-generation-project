@@ -140,6 +140,33 @@ def test_package_is_truthful_and_uses_documented_platform_limits(tmp_path):
     assert package["readiness"]["ready_for_publication"] is False
 
 
+def test_cinema_metadata_must_be_prepared_and_changes_revoke_exact_package_approval(
+    tmp_path,
+):
+    facts = _facts(tmp_path)
+    facts["cinema_metadata_required"] = True
+    pending = package_story(facts, platforms=("youtube_long",))
+    assert pending["required_approval"]["prepared_platform_metadata"] is False
+    assert pending["readiness"]["required_checks_passed"] is False
+    facts.update(
+        platform_titles={"youtube_long": "Will the potter keep his promise?"},
+        platform_descriptions={
+            "youtube_long": "A potter learns to ask a neighbor for help. #Promise"
+        },
+    )
+    prepared = package_story(facts, platforms=("youtube_long",))
+    assert prepared["required_approval"]["prepared_platform_metadata"] is True
+    approval = {
+        "master_sha256": facts["master"]["sha256"],
+        "package_sha256": prepared["package_sha256"],
+    }
+    approved = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert approved["approval"]["verified_for_exact_master_and_package"] is True
+    facts["platform_titles"]["youtube_long"] = "How can a neighbor help?"
+    changed = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert changed["approval"]["verified_for_exact_master_and_package"] is False
+
+
 def test_explicit_brand_tag_precedes_four_story_supported_topics(tmp_path):
     facts = _facts(tmp_path)
     facts["brand_hashtags"] = ["ExampleStoryCo"]

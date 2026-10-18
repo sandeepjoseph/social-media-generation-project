@@ -674,6 +674,19 @@ def package_story(
 
     tags = _hashtags(story_facts)
     keywords = _normal_topics(story_facts)
+    prepared_metadata = not story_facts.get("cinema_metadata_required") or bool(
+        tags
+        and keywords
+        and all(
+            _text((story_facts.get("platform_titles") or {}).get(platform))
+            and _text((story_facts.get("platform_descriptions") or {}).get(platform))
+            for platform in selected_platforms
+        )
+    )
+    if not prepared_metadata:
+        queue.append(
+            "Cinema releases require prepared platform titles, descriptions and relevant story-supported tags/keywords."
+        )
     platforms_out: dict[str, Any] = {}
     for platform in selected_platforms:
         rendered_title = _title(story_facts, platform)
@@ -783,6 +796,7 @@ def package_story(
             "rights_coverage": rights_coverage,
             "made_for_kids_reviewed": audience_reviewed,
             "realistic_ai_disclosure_reviewed": ai_reviewed,
+            "prepared_platform_metadata": prepared_metadata,
             "platform_assets_and_audiences_reviewed": all(
                 asset["verified"]
                 and asset["variant_reviewed"]

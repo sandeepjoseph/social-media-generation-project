@@ -26,6 +26,7 @@ from app.services.story_studio import (
     refresh_story_profile,
     record_learning_rule,
     import_performance_pilot_review,
+    finishing_review_template,
 )
 from app.services.studio_cinema import policy_for
 from app.services.studio_native_movie import build_native_movie
@@ -661,6 +662,24 @@ with tab_qa:
                 )
             except Exception as exc:
                 st.error(str(exc))
+    if active_cinema and qa_master:
+        st.caption(
+            "Mandatory final-film review: actual audio/video, every scene boundary, pleasant music, acting, continuity, readable captions and a complete ending. Label AI review and sampling limits honestly."
+        )
+        if st.button("Prepare unpassed finishing checklist"):
+            try:
+                checklist = finishing_review_template(store, story_id, qa_master)
+                st.download_button(
+                    "Download finishing review template",
+                    json.dumps(checklist, indent=2),
+                    file_name="finishing-review.pending.json",
+                    mime="application/json",
+                )
+                st.info(
+                    "Fill from actual final-film review and preserve evidence files. Include as finishing_review in the QA JSON; this template is not an approval."
+                )
+            except Exception as exc:
+                st.error(str(exc))
     qa_upload = st.file_uploader(
         "Import reviewer QA JSON bound to this master and script",
         type=["json"],
@@ -817,6 +836,12 @@ with tab_assets:
                     )
                 except Exception as exc:
                     st.error(str(exc))
+    prepared_metadata_json = st.text_area(
+        "Prepared publication metadata (JSON)",
+        value="{}",
+        key=f"metadata_{story_id}",
+        help="Optional overrides: platform_titles, platform_descriptions, topics, keywords and chapters. Cinema releases require prepared titles/descriptions for each selected platform. These become part of the exact approved package.",
+    )
     if st.button("Draft platform metadata", disabled=not bool(master)):
         try:
             package = build_platform_package(
@@ -824,6 +849,7 @@ with tab_assets:
                 story_id,
                 master_path=master,
                 platforms=tuple(targets),
+                metadata=json.loads(prepared_metadata_json),
                 human_review={
                     "audience_reviewed": audience_reviewed,
                     "made_for_kids_reviewed": True

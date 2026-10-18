@@ -304,8 +304,25 @@ def test_package_approval_is_bound_to_current_assets_and_analytics_cost_unknown(
         captions_path=captions,
         platforms=("youtube_long",),
         human_review=review,
+        metadata={
+            "platform_titles": {"youtube_long": "Can they share the fruit?"},
+            "platform_descriptions": {
+                "youtube_long": "A gentle story about sharing fruit. #Sharing"
+            },
+            "keywords": ["fruit", "sharing"],
+        },
     )
     assert asset["publishing"] == "manual_handoff_only"
+    assert asset["platforms"]["youtube_long"]["title"] == "Can they share the fruit?"
+    assert (
+        asset["platforms"]["youtube_long"]["description"]
+        == "A gentle story about sharing fruit. #Sharing"
+    )
+    saved_facts = store.latest_artifact(sid, "package_facts")["document"]["facts"]
+    assert saved_facts["platform_titles"] == {
+        "youtube_long": "Can they share the fruit?"
+    }
+    assert saved_facts["keywords"] == ["fruit", "sharing"]
     approval_id = approve_package(
         store, sid, saved_master["sha256"], asset["package_sha256"], "local reviewer"
     )

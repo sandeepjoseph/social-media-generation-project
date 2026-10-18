@@ -75,6 +75,10 @@ def film():
                     "costume_state": "same green tunic",
                     "continuity": "pot in left hand, same daylight",
                     "transition": "motivated cut",
+                    "story_clock": "same afternoon",
+                    "sound_cues": "quiet daytime birds, no music under native take",
+                    "prop_state_before": "pot in left hand",
+                    "prop_state_after": "pot offered to partner",
                 }
             )
         script["scenes"].append(scene)
@@ -160,6 +164,8 @@ def review_for(board, receipts, board_hash, *, pilot=False):
                 "lip_sync_pass": True,
                 "original_av_timing_preserved": True,
                 "voice_consistency_pass": True,
+                "unintended_speech_absent": True,
+                "complete_sentence_and_rest_pass": True,
                 "review_method": "full_utterance_normal_and_half_speed",
                 "sync_observations": [
                     {
@@ -280,6 +286,9 @@ def test_narrator_only_story_is_rejected(configured):
             "speaker_or_voice_identity_mismatch",
         ),
         (lambda s: s.update(action_end=""), "action_end_required"),
+        (lambda s: s.update(story_clock=""), "story_clock_required"),
+        (lambda s: s.update(sound_cues=""), "sound_cues_required"),
+        (lambda s: s.update(prop_state_after=""), "prop_state_after_required"),
         (
             lambda s: s.update(speech_mode="narration"),
             "character_dialogue_cannot_be_narration",

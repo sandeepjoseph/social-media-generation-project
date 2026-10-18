@@ -49,7 +49,7 @@ The workflow map is `request → research evidence → screenplay → storyboard
 
 External profiles can enable the built-in `cinema_policy` with `{"enabled": true}`.
 This is an opt-in feature layered onto the existing workflow; generic video jobs
-and historical imports retain their contracts. Contract version 2 defaults to a
+and historical imports retain their contracts. Contract version 3 defaults to a
 360–480 second full episode, two speaking characters, no more than 20% narrator
 words, at least 55% native-dialogue shot time and 75% character performance time.
 These are production defaults, not a scientific claim about an ideal attention
@@ -166,3 +166,80 @@ per second. It never changes words, source clips, voice timing or shot duration.
 Insufficient existing time is recorded as a hold for explicit editorial replanning.
 The new candidate revokes sequence approval and still needs actual caption and
 whole-movie review. Other languages require fluent-reviewed line breaks and timing.
+
+## Mandatory cinema finishing (contract 3)
+
+Once a profile enables cinema, the finishing contract is mandatory. A channel
+can additionally set `mandatory_cinema: true`; its profile then fails to load if
+cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.0.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
+identity includes caption, finishing and growth implementations, so changes
+hold frozen cinema jobs for explicit replan and revoke downstream approvals
+through the existing refresh operation. Historical uploads are never repaired
+or reapproved by changing a template.
+
+Before generation, the board must specify the story clock, weather, lighting,
+camera, eyeline, physical action, costume, before/after prop states, sound cues
+and transition. Speaking performers retain their native voices and original A/V
+timing. Each component review must explicitly check unintended speech; speaking
+shots must also have a complete sentence and clean rest. The two-speaker pilot,
+full-utterance normal/half-speed reviews and full-film duration gates still apply.
+
+Caption readability is checked by default before native rendering and again
+against the actual localized sidecar during final QA. English cards require at
+least two seconds, no more than 16 characters/second, two lines and 42 characters
+per line. Ordered text must reproduce the storyboard dialogue exactly once.
+Overlaps, final-word flashes, missing words and stale locale bindings hold the
+release. `--prepare-readable-captions` can propose extensions into existing pauses
+or merge a short sentence; it never changes actor timing. Crowded cards require
+explicit editorial replanning, never slower speech or invented word timings.
+Other languages require their own fluent typography and timing review; English
+character limits are not represented as a Malayalam fluency test.
+
+The QA JSON must now contain `finishing_review`. In Director Studio's Quality
+tab, **Prepare unpassed finishing checklist** downloads a source-bound pending
+checklist; the same API is `story_studio.finishing_review_template(store,
+story_id, master_path)`. A generated checklist is not a passing review. Fill it
+only after actual review, preserving the raw report in a hash-bound local file.
+
+The finishing review binds story ID, final master, current captions, storyboard,
+resolved cinema policy and locale. It requires:
+
+- Actual complete-movie audio/video review, a named reviewer, explicit
+  `reviewer_kind` (`human`, `ai`, `assisted`), media-access confirmation and honest
+  limitations. A sampled AI review must describe its sampling; no human viewing
+  or phoneme-perfect claim may be invented.
+- All named creative checks: plot fidelity and complete ending; acting,
+  listening and dialogue; likeness/proportions/cast count; wardrobe, sets,
+  props, camera/eyeline/action; chronology/weather/light; native voice/timing;
+  pleasant age-appropriate music, intelligibility and clean boundaries;
+  matching readable captions; no padded footage; independent story delivery.
+- Every shot's opening, ending and join checked on the actual final timeline,
+  with a specific observed detail and no unintended voices, clicks or cut-off
+  words. This includes action-only shots. Checks must cover the exact board in
+  order, including the beginning and ending.
+- At least three distinct, bounded `start_seconds`/`end_seconds` audiovisual
+  observations spanning the beginning, middle and ending; preserved review files must exist and match SHA-256. Ambiguous
+  MMSS-as-seconds values or out-of-range observations are rejected. Resolve
+  contradictory reports against actual excerpts and preserve negative evidence.
+- An empty `unresolved_issues` list. A component pass, transcript, technical
+  decode or an exported file cannot substitute for final creative acceptance.
+
+Final QA, QA import and exact-package owner approval independently recheck these
+requirements. The software validates evidence and objective constraints; it does
+not automatically judge subjective performance or hear defects. Failed or
+changed candidates stay held. No extra provider credits are spent by these checks.
+
+`build_platform_package(..., metadata={...})` accepts prepared `platform_titles`,
+`platform_descriptions`, `topics`, `keywords` and `chapters`, also available in the
+Packaging UI. Request defaults are retained unless explicitly overridden. Cinema
+packages require prepared text for every selected platform plus relevant tags
+and keywords. Metadata becomes part of the exact approved package hash; it cannot
+supply fake QA, rights or audience approvals. Keep narrow relevant tags (up to
+five), truthful hooks and thumbnails, native child-directed/AI controls, matching
+captions, primary-account-only distribution and verified dated archives. No
+metadata strategy guarantees views or monetization. Platform authorization and
+manual handoff restrictions remain in effect.
+
+Each story retains its own movie, captions, metadata, reviews, publication
+receipts and dated media archive. New policy revisions do not combine films,
+replace old public uploads or silently reuse their approvals.

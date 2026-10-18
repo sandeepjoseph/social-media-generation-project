@@ -110,7 +110,7 @@ def reviewed_caption_cues(entry, *, locale="en"):
     return result
 
 
-def validate_plan(board, plan, *, require_sequence_review=True):
+def validate_plan(board, plan, *, require_sequence_review=True, check_readability=True):
     issues = []
     readability = plan.get("caption_readability")
     if isinstance(readability, dict) and readability.get("held"):
@@ -123,6 +123,8 @@ def validate_plan(board, plan, *, require_sequence_review=True):
         issues.append("Current hash-bound Flow bundle is required")
     else:
         bundle = json.loads(bundle_path.read_text())
+        if bundle.get("story_id") and plan.get("story_id") != bundle["story_id"]:
+            issues.append("Selected plan must bind its own independent story ID")
         if bundle.get("storyboard_sha256") != plan.get("storyboard_artifact_sha256"):
             issues.append("Flow bundle and selected storyboard binding differ")
     locale = plan.get("locale")
@@ -269,7 +271,25 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                     "Actual reviewed caption interval required: " + entry["shot_id"]
                 )
             try:
-                reviewed_caption_cues(entry, locale=locale)
+                cues = reviewed_caption_cues(entry, locale=locale)
+                if check_readability:
+                    from app.services.studio_finishing import caption_issues
+
+                    issues.extend(
+                        caption_issues(
+                            [
+                                {
+                                    "start_seconds": a,
+                                    "end_seconds": b,
+                                    "text": text,
+                                    "lines": text.splitlines(),
+                                }
+                                for a, b, text in cues
+                            ],
+                            locale=locale,
+                            expected_text=entry["dialogue"],
+                        )
+                    )
             except (ValueError, TypeError, KeyError) as exc:
                 issues.append(f"Invalid reviewed captions: {entry['shot_id']}: {exc}")
         elif decision.get("context_pass") is not True:

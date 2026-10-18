@@ -289,7 +289,19 @@ def load_director_profile(
     )
     if profile_id not in (None, resolved_id):
         raise ValueError("requested private profile identifier does not match")
-    cinema.policy_for(profile)  # Reject invalid numeric contracts at intake.
+    policy = cinema.policy_for(profile)  # Reject invalid contracts at intake.
+    if profile.get("mandatory_cinema") is True and not policy:
+        raise ValueError("this channel requires the enabled cinema acceptance contract")
+    if profile.get("mandatory_cinema") is True and (
+        not learning_path
+        or not profile.get("template_revision")
+        or template.get("template_revision") != profile["template_revision"]
+        or learning.get("active_template_revision") != profile["template_revision"]
+        or profile.get("required_cinema_contract_version") != cinema.CONTRACT_VERSION
+    ):
+        raise ValueError(
+            "mandatory channel template, applied learning and cinema implementation must match"
+        )
     return {
         **profile,
         "profile_sha256": _digest_bytes(combined.encode("utf-8")),
@@ -321,6 +333,8 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "media_delivery",
             "caption_policy",
             "cinema_policy",
+            "mandatory_cinema",
+            "required_cinema_contract_version",
             "template_revision",
             "production_build",
             "learning_rules",
@@ -1472,6 +1486,136 @@ def _require_current_cinema_profile(store: StudioStore, story_id: str) -> None:
         )
 
 
+def finishing_review_template(store: StudioStore, story_id: str, master_path) -> dict:
+    """Prepare an UNPASSED checklist; only actual review may fill its verdicts."""
+    from app.services import studio_finishing as finishing
+    from app.services.studio_captions import find_localized_variant
+
+    policy, board = _cinema_context(store, story_id)
+    master = Path(master_path or "")
+    variant = (
+        find_localized_variant(store, story_id, master) if master.is_file() else {}
+    )
+    offset, boundaries = 0, []
+    for shot in (board or {}).get("document", {}).get("shots", []):
+        end = offset + shot["duration_seconds"]
+        boundaries.append(
+            {
+                "shot_id": shot["shot_id"],
+                "start_seconds": offset,
+                "end_seconds": end,
+                "opening_pass": False,
+                "ending_pass": False,
+                "join_pass": False,
+                "unintended_speech_absent": False,
+                "clicks_and_truncation_absent": False,
+                "observed_boundary_detail": "",
+            }
+        )
+        offset = end
+    return {
+        "contract_version": finishing.VERSION,
+        "status": "pending_actual_review",
+        "story_id": story_id,
+        "master_sha256": digest_file(master) if master.is_file() else None,
+        "caption_sha256": (variant or {}).get("caption_sha256"),
+        "storyboard_sha256": (board or {}).get("sha256"),
+        "policy_sha256": cinema.digest(policy),
+        "locale": store.story(story_id)["request"]
+        .get("audience", {})
+        .get("language", "en"),
+        "method": "actual_complete_movie_audio_video",
+        "media_access_confirmed": False,
+        "reviewer": "",
+        "reviewer_kind": "",
+        "limitations": "",
+        "checks": {key: False for key in finishing.CHECKS},
+        "unresolved_issues": [
+            "Actual final-film and boundary review not yet performed"
+        ],
+        "evidence_files": [],
+        "observations": [],
+        "boundary_reviews": boundaries,
+    }
+
+
+def _finishing_issues(store, story_id, master_path, review):
+    from app.services import studio_finishing as finishing
+    from app.services.studio_captions import find_localized_variant, parse_caption_file
+
+    policy, board = _cinema_context(store, story_id)
+    if not policy:
+        return []
+    master = Path(master_path or "")
+    if not master.is_file():
+        return ["finishing:actual_final_movie_required"]
+    duration = video_duration_seconds(master)
+    variant = find_localized_variant(store, story_id, master)
+    locale = store.story(story_id)["request"].get("audience", {}).get("language", "en")
+    issues = finishing.review_issues(
+        review,
+        story_id=story_id,
+        master_sha256=digest_file(master),
+        caption_sha256=(variant or {}).get("caption_sha256"),
+        board=(board or {}).get("document", {}),
+        storyboard_sha256=(board or {}).get("sha256"),
+        policy_sha256=cinema.digest(policy),
+        locale=locale,
+        duration_seconds=duration,
+    )
+    if not variant:
+        return issues + ["finishing:current_localized_captions_required"]
+    try:
+        parsed = parse_caption_file(variant["caption_path"], duration_seconds=duration)
+        spoken = " ".join(
+            shot.get("dialogue", {}).get("text", "")
+            for shot in (board or {}).get("document", {}).get("shots", [])
+        )
+        issues.extend(
+            finishing.caption_issues(
+                parsed["cues"], locale=locale, expected_text=spoken
+            )
+        )
+    except (ValueError, OSError, TypeError) as exc:
+        issues.append(f"finishing:captions_invalid:{exc}")
+    return issues
+
+
+def _publication_metadata(request, metadata):
+    """Carry reviewed creative metadata into the exact hash-bound package.
+
+    Only creative fields are accepted; this cannot supply QA, rights, audience
+    approvals or switch an account. Missing overrides retain generic defaults.
+    """
+    fields = {
+        "platform_titles",
+        "platform_descriptions",
+        "keywords",
+        "topics",
+        "chapters",
+    }
+    if metadata is not None and (
+        not isinstance(metadata, dict) or set(metadata) - fields
+    ):
+        raise ValueError("publication metadata contains unsupported fields")
+    result = {key: request[key] for key in fields if key in request}
+    result.update(metadata or {})
+    for key, value in result.items():
+        if key.startswith("platform_"):
+            if not isinstance(value, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) or not v.strip()
+                for k, v in value.items()
+            ):
+                raise ValueError(f"{key} requires platform-to-text mappings")
+        elif not isinstance(value, list):
+            raise ValueError(f"{key} requires a list")
+        elif key != "chapters" and any(
+            not isinstance(v, str) or not v.strip() for v in value
+        ):
+            raise ValueError(f"{key} requires nonempty text items")
+    return result
+
+
 def quality_report(
     store: StudioStore, story_id: str, *, master_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -1555,6 +1699,14 @@ def quality_report(
                 store.flow_receipts(story_id),
                 policy=policy,
                 storyboard_sha256=cinema_board.get("sha256", ""),
+            )
+        )
+        issues.extend(
+            _finishing_issues(
+                store,
+                story_id,
+                master_path,
+                ((review or {}).get("document") or {}).get("finishing_review"),
             )
         )
     if current_master_sha is None:
@@ -1670,6 +1822,7 @@ def quality_report(
         "duration_verified": measured_duration is not None,
         "audience": story["request"].get("audience", {}),
         "cinema_policy": policy,
+        "finishing_requirements": policy.get("finishing_contract", {}),
         "production_version": versions,
         "review_required": [
             "age fit",
@@ -1725,6 +1878,7 @@ def import_quality_review(
         raise ValueError(
             "QA report needs a named reviewer and passing decode, visual, and audio checks"
         )
+    _require_current_cinema_profile(store, story_id)
     policy, board = _cinema_context(store, story_id)
     if policy:
         issues = cinema.performance_review_issues(
@@ -1736,6 +1890,9 @@ def import_quality_review(
         )
         issues.extend(
             cinema.duration_issues(video_duration_seconds(master), policy, "master")
+        )
+        issues.extend(
+            _finishing_issues(store, story_id, master, report.get("finishing_review"))
         )
         if issues:
             raise ValueError("; ".join(issues))
@@ -1780,6 +1937,7 @@ def build_platform_package(
     captions_path: str | Path | None = None,
     platforms: tuple[str, ...] | None = None,
     human_review: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Draft platform assets using the shared generic growth service; no publishing."""
     from app.services.studio_growth import DEFAULT_PLATFORMS, package_story
@@ -1788,6 +1946,7 @@ def build_platform_package(
     story = store.story(story_id)
     profile = _story_profile(story["request"])
     packaging_defaults = profile.get("packaging_defaults") or {}
+    prepared_metadata = _publication_metadata(story["request"], metadata)
     master = Path(master_path).expanduser().resolve()
     master_artifact = store.add_artifact(
         story_id,
@@ -1920,6 +2079,8 @@ def build_platform_package(
         "ai_realistic_content": (human_review or {}).get("ai_realistic_content"),
         "platform_targets": list(selected_platforms),
         "platform_assets": platform_assets,
+        "cinema_metadata_required": bool(cinema.policy_for(profile)),
+        **prepared_metadata,
     }
     package = package_story(facts, platforms=selected_platforms, approval=None)
     store.add_artifact(

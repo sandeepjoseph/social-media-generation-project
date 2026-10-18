@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "2.1.0"
+CONTRACT_VERSION = "3.0.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",
@@ -65,6 +65,11 @@ def policy_for(profile: dict) -> dict:
         raise ValueError("invalid cinema duration or character policy")
     if policy["mode"] != "dialogue_led_film":
         raise ValueError("unsupported cinema performance mode")
+    from app.services.studio_finishing import contract
+
+    # Enabling cinema enables its release contract. An omitted/false private
+    # override cannot quietly turn the learned finishing requirements off.
+    policy["finishing_contract"] = contract()
     return policy
 
 
@@ -76,6 +81,14 @@ def implementation_identity(repo: Path) -> dict:
         "webui/pages/2_Director_Studio.py",
         "app/services/studio_native_movie.py",
         "app/services/studio_native_media.py",
+        "app/services/studio_caption_readability.py",
+        "app/services/studio_captions.py",
+        "app/services/studio_finishing.py",
+        "app/services/studio_growth.py",
+        "app/services/media_delivery.py",
+        "app/services/flow_cost_router.py",
+        "app/services/cost_router.py",
+        "app/services/cost_router_overrides.py",
     )
     hashes = {
         name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
@@ -202,6 +215,10 @@ def storyboard_issues(board: dict, screenplay: dict, policy: dict) -> list[str]:
             "costume_state",
             "continuity",
             "transition",
+            "story_clock",
+            "sound_cues",
+            "prop_state_before",
+            "prop_state_after",
         ):
             if not shot.get(field):
                 issues.append(f"cinema:{sid}:{field}_required")
@@ -372,6 +389,8 @@ def performance_review_issues(
             issues.append(f"cinema:{sid}:performance_media_hash_mismatch")
         if r.get("performance_pass") is not True:
             issues.append(f"cinema:{sid}:acting_not_reviewed")
+        if r.get("unintended_speech_absent") is not True:
+            issues.append(f"cinema:{sid}:unintended_speech_not_reviewed")
         if shot.get("speech_mode") == "native_dialogue":
             if not all(
                 r.get(k) is True
@@ -381,6 +400,7 @@ def performance_review_issues(
                     "lip_sync_pass",
                     "original_av_timing_preserved",
                     "voice_consistency_pass",
+                    "complete_sentence_and_rest_pass",
                 )
             ):
                 issues.append(f"cinema:{sid}:dialogue_or_lip_sync_unverified")
