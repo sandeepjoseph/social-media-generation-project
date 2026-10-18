@@ -74,12 +74,16 @@ another channel is already running on 8511.
   child-directed settings, AI disclosures, performance and full-film checks for
   each new release. No previous review or publication approval transfers.
 
-Generated media goes to the new channel's own `media` directory, organized with
+Generated media goes to `~/Desktop/Deployments/Social/<channel-id>`, organized with
 the existing date/story archive rules. `--media-root` can select another location.
 Keep a backup of private policy and verified media; do not commit `config.toml`,
 credentials or the full channel directory to the public fork. If moving an
 initialized channel, launch rebases its private policy dependencies; review its
 archive destination on the destination laptop before generation.
+
+Set `first_publication_year` in the story request if its actual first-release year
+differs from its creation year, which supplies the default. Repackaging must retain
+the original first-publication year.
 
 Copyright notices identify the owner-declared original production rights, to the
 extent protected. Underlying folklore, licensed assets, provider terms and

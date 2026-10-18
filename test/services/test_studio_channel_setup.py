@@ -12,6 +12,11 @@ from app.services.story_studio import load_director_profile
 from app.utils import utils
 
 
+@pytest.fixture(autouse=True)
+def isolated_desktop(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+
 def test_fresh_channel_loads_mandatory_cinema_and_isolated_state(tmp_path, monkeypatch):
     root = tmp_path / "new-channel"
     initialize_channel(
@@ -100,7 +105,9 @@ def test_moved_channel_rebases_private_paths(tmp_path):
     env = channel_environment(new)
     profile = load_director_profile(profile_path=env["STORY_STUDIO_PROFILE_PATH"])
     assert Path(profile["private_director_template"]).parent == new
-    assert profile["media_delivery"]["destination"] == str(new / "media")
+    assert profile["media_delivery"]["destination"] == str(
+        Path.home() / "Desktop" / "Deployments" / "Social" / "old-channel"
+    )
 
 
 def test_refuses_existing_state_or_git_checkout(tmp_path):

@@ -145,7 +145,7 @@ def initialize_channel(
                 "destination": str(
                     Path(media_root).expanduser().resolve()
                     if media_root
-                    else root / "media"
+                    else Path.home() / "Desktop" / "Deployments" / "Social" / channel_id
                 ),
                 "timezone": timezone,
                 "archive_on_generation": True,
@@ -338,8 +338,11 @@ def channel_environment(root):
     # Isolated delivery remains portable. An explicit external archive can be
     # selected in the private profile on the destination laptop.
     if not Path(profile["media_delivery"]["destination"]).is_dir():
-        profile["media_delivery"]["destination"] = str(root / "media")
-        (root / "media").mkdir(exist_ok=True)
+        destination = (
+            Path.home() / "Desktop" / "Deployments" / "Social" / manifest["channel_id"]
+        )
+        profile["media_delivery"]["destination"] = str(destination)
+        destination.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(profile, indent=2, ensure_ascii=False) + "\n"
     if profile_path.read_text(encoding="utf-8") != serialized:
         profile_path.write_text(serialized, encoding="utf-8")
