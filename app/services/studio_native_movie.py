@@ -35,6 +35,81 @@ def media_plan_digest(plan):
     ).hexdigest()
 
 
+def reviewed_caption_cues(entry, *, locale="en"):
+    """Validate reviewed local cue times and preserve the utterance exactly once.
+
+    Cue timing comes from the selected performance's word evidence, never from
+    stretching the voice or estimating a replacement narration's duration.
+    """
+    if not entry.get("dialogue"):
+        return []
+    cues = entry.get("caption_cues")
+    if cues is None:
+        cues = [
+            {
+                "start": entry.get("caption_start"),
+                "end": entry.get("caption_end"),
+                "text": entry["dialogue"],
+                "lines": entry.get("caption_lines"),
+            }
+        ]
+    if not isinstance(cues, list) or not cues:
+        raise ValueError("Reviewed caption cues must be a nonempty list")
+    duration = entry["duration_seconds"]
+    result = []
+    words = []
+    for cue in cues:
+        if not isinstance(cue, dict):
+            raise ValueError("Each reviewed caption cue must be an object")
+        start, end = cue.get("start"), cue.get("end")
+        if (
+            not all(
+                isinstance(x, (int, float))
+                and not isinstance(x, bool)
+                and math.isfinite(x)
+                for x in [start, end]
+            )
+            or not 0 <= start < end <= duration
+            or (result and start < result[-1][1])
+        ):
+            raise ValueError(
+                "Reviewed caption cues must be ordered within the native clip"
+            )
+        text = cue.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Each reviewed caption cue requires exact text")
+        explicit = cue.get("lines")
+        if locale != "en" and not explicit:
+            raise ValueError(
+                "Localized captions require explicitly reviewed line breaks"
+            )
+        lines = explicit or textwrap.wrap(
+            text, 42, break_long_words=False, break_on_hyphens=False
+        )
+        if (
+            not isinstance(lines, list)
+            or not 1 <= len(lines) <= 2
+            or any(
+                not isinstance(line, str)
+                or not line.strip()
+                or (locale == "en" and len(line) > 42)
+                for line in lines
+            )
+        ):
+            raise ValueError(
+                "Split the reviewed utterance into word-timed cues; do not shrink captions"
+            )
+        if " ".join(" ".join(lines).split()) != " ".join(text.split()):
+            raise ValueError(
+                "Caption lines must preserve the exact localized utterance"
+            )
+        words.append(text)
+        result.append((start, end, "\n".join(lines)))
+    if " ".join(" ".join(words).split()) != " ".join(entry["dialogue"].split()):
+        raise ValueError("Caption cues must preserve the entire exact utterance once")
+    return result
+
+
 def validate_plan(board, plan, *, require_sequence_review=True):
     issues = []
     bundle_path = Path(plan.get("flow_bundle_path", ""))
@@ -180,7 +255,9 @@ def validate_plan(board, plan, *, require_sequence_review=True):
             start, end = entry.get("caption_start"), entry.get("caption_end")
             if (
                 not all(
-                    isinstance(x, (int, float)) and math.isfinite(x)
+                    isinstance(x, (int, float))
+                    and not isinstance(x, bool)
+                    and math.isfinite(x)
                     for x in [start, end]
                 )
                 or not 0 <= start < end <= duration
@@ -188,6 +265,10 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                 issues.append(
                     "Actual reviewed caption interval required: " + entry["shot_id"]
                 )
+            try:
+                reviewed_caption_cues(entry, locale=locale)
+            except (ValueError, TypeError, KeyError) as exc:
+                issues.append(f"Invalid reviewed captions: {entry['shot_id']}: {exc}")
         elif decision.get("context_pass") is not True:
             issues.append("Source-bound contextual action approval required")
     if not 360 <= total <= 480:
@@ -235,30 +316,10 @@ def write_captions(entries, target, *, locale="en"):
     offset = 0
     cues = []
     for entry in entries:
-        if entry.get("dialogue"):
-            explicit_lines = entry.get("caption_lines")
-            if locale != "en" and not explicit_lines:
-                raise ValueError(
-                    "Localized captions require explicitly reviewed line breaks"
-                )
-            lines = explicit_lines or textwrap.wrap(
-                entry["dialogue"], 42, break_long_words=False, break_on_hyphens=False
-            )
-            if len(lines) > 2:
-                raise ValueError(
-                    "Split the reviewed utterance into word-timed cues; do not shrink captions"
-                )
-            if " ".join(" ".join(lines).split()) != " ".join(entry["dialogue"].split()):
-                raise ValueError(
-                    "Caption lines must preserve the exact localized utterance"
-                )
-            cues.append(
-                (
-                    offset + entry["caption_start"],
-                    offset + entry["caption_end"],
-                    "\n".join(lines),
-                )
-            )
+        cues.extend(
+            (offset + a, offset + b, text)
+            for a, b, text in reviewed_caption_cues(entry, locale=locale)
+        )
         offset += entry["duration_seconds"]
     assert all(
         a < b and (i == 0 or a >= cues[i - 1][1]) for i, (a, b, _) in enumerate(cues)

@@ -127,6 +127,13 @@ exact ordered media plan and review-cut hash, plus music rights evidence bound
 to the actual score. Audio and captions must share the story locale. Non-English
 captions need reviewed line breaks and a verified font; English is no fallback.
 
+Long native utterances may supply `caption_cues` with local `start`, `end`,
+`text` and optional reviewed `lines`. These cues use the selected actor's word
+timing, preserve the complete script exactly once, and cannot overlap or exceed
+the clip. English cues use at most two 42-character lines. Localized cues require
+explicit reviewed line breaks. Caption validation runs before rendering; it does
+not shorten, replace or stretch the actor's performance.
+
 Native 24fps shots and 48kHz stereo PCM are concatenated in one pass before the
 final AAC export, avoiding joined per-shot AAC encoder padding. Full-frame decode
 and timestamp checks do not establish acting, lip sync or editorial quality.

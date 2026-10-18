@@ -212,6 +212,82 @@ def test_editorial_duration_does_not_change_provider_take_or_invent_a_stretch():
     )
 
 
+def test_long_native_line_uses_reviewed_word_timed_cues_without_changing_words(
+    tmp_path,
+):
+    entry = {
+        "dialogue": "A beautiful idea needs careful thought. Let us listen to each other and build it together.",
+        "duration_seconds": 8,
+        "caption_start": 0.4,
+        "caption_end": 7.5,
+        "caption_cues": [
+            {
+                "start": 0.4,
+                "end": 3.1,
+                "text": "A beautiful idea needs careful thought.",
+            },
+            {
+                "start": 3.2,
+                "end": 7.5,
+                "text": "Let us listen to each other and build it together.",
+            },
+        ],
+    }
+    srt, vtt = movie.write_captions([entry], tmp_path / "long.en")
+    assert "00:00:00,400 --> 00:00:03,100" in srt.read_text()
+    assert "00:00:03.200 --> 00:00:07.500" in vtt.read_text()
+    assert len(movie.reviewed_caption_cues(entry)) == 2
+    with pytest.raises(FileExistsError):
+        movie.write_captions([entry], tmp_path / "long.en")
+
+
+@pytest.mark.parametrize(
+    "cue_change",
+    [
+        {"start": True},
+        {"start": -1},
+        {"end": float("nan")},
+        {"end": 8.1},
+        {"text": "We tried again."},
+        {"lines": ["Wrong words"]},
+        {"lines": ["We", "try", "together."]},
+    ],
+)
+def test_invalid_subcues_are_held_before_render(selection, cue_change):
+    board, plan, _, _ = selection
+    entry = plan["shots"][0]
+    cue = {"start": 0.3, "end": 5.1, "text": entry["dialogue"]}
+    cue.update(cue_change)
+    entry["caption_cues"] = [cue]
+    assert any(
+        "Invalid reviewed captions" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_subcues_cannot_overlap_repeat_omit_or_fall_back_in_another_language():
+    entry = {
+        "dialogue": "Try this together.",
+        "duration_seconds": 6,
+        "caption_cues": [
+            {"start": 0.3, "end": 2, "text": "Try this"},
+            {"start": 1.9, "end": 4, "text": "together."},
+        ],
+    }
+    with pytest.raises(ValueError, match="ordered"):
+        movie.reviewed_caption_cues(entry)
+    entry["caption_cues"][1]["start"] = 2.1
+    entry["caption_cues"][1]["text"] = "this together."
+    with pytest.raises(ValueError, match="entire exact utterance once"):
+        movie.reviewed_caption_cues(entry)
+    entry["caption_cues"][1]["text"] = "together."
+    with pytest.raises(ValueError, match="reviewed line breaks"):
+        movie.reviewed_caption_cues(entry, locale="ml")
+    for cue in entry["caption_cues"]:
+        cue["lines"] = [cue["text"]]
+    assert len(movie.reviewed_caption_cues(entry, locale="ml")) == 2
+
+
 def test_mixed_length_and_audio_layouts_keep_native_frame_and_pcm_timing(tmp_path):
     av = pytest.importorskip(
         "av", reason="Native media integration requires the media runtime"
