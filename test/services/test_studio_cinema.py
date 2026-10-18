@@ -220,6 +220,16 @@ def test_native_export_preserves_provider_take_length_and_exact_prompt(
     assert store.import_flow_receipt(sid, receipt)["shot_id"] == exported["shot_id"]
 
 
+def test_reuse_only_export_never_authorizes_a_duplicate_cloud_request(configured):
+    store, sid, _, board = ready_story(configured)
+    board["shots"][0]["new_generation_required"] = False
+    studio.ingest_storyboard_document(store, sid, board)
+    bundle = studio.export_flow_bundle(store, sid)
+    assert bundle["shots"][0]["generation_allowed"] is False
+    assert bundle["shots"][1]["generation_allowed"] is True
+    assert bundle["dialogue_pilot"]["accepted"] is False
+
+
 @pytest.mark.parametrize("seconds", [56, 170, 256, 359, 481, float("nan"), True, None])
 def test_short_or_unverified_full_episode_rejected(seconds):
     assert cinema.duration_issues(seconds, cinema.DEFAULTS, "master")

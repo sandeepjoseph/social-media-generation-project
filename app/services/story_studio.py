@@ -2535,9 +2535,9 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
                     "amount": None,
                 },
                 "handoff": "manual_browser_only",
-                "generation_allowed": not policy
-                or pilot_accepted
-                or shot["shot_id"] in pilots,
+                "generation_allowed": shot.get("new_generation_required", True)
+                is not False
+                and (not policy or pilot_accepted or shot["shot_id"] in pilots),
             }
         )
     bundle = {
