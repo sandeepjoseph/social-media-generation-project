@@ -85,6 +85,8 @@ def implementation_identity(repo: Path) -> dict:
         "app/services/studio_captions.py",
         "app/services/studio_finishing.py",
         "app/services/studio_growth.py",
+        "app/services/studio_discovery.py",
+        "app/services/studio_engagement.py",
         "app/services/media_delivery.py",
         "app/services/flow_cost_router.py",
         "app/services/cost_router.py",

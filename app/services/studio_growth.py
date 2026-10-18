@@ -12,6 +12,13 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
+from app.services.studio_discovery import (
+    search_brief,
+    youtube_keywords,
+    youtube_preflight,
+)
+from app.services.studio_engagement import engagement_plan
+
 DEFAULT_PLATFORMS = (
     "youtube_long",
     "youtube_short",
@@ -479,6 +486,19 @@ def _description(facts: dict[str, Any], platform: str, hashtags: list[str]) -> s
     # Source status is often unavailable at packaging time, so do not imply
     # that a folklore adaptation is newly original; use neutral wording.
     parts = [synopsis] if synopsis else [f"Story: {title}."]
+    if platform.startswith("youtube_") and (facts.get("search_policy") or {}).get(
+        "required"
+    ):
+        brief = search_brief(facts)
+        parts = [
+            synopsis
+            if brief["primary_query"].casefold() in synopsis.casefold()
+            else f"{brief['primary_query']}: {synopsis}"
+            if synopsis
+            else f"Story: {title}."
+        ]
+        if title.casefold() not in synopsis.casefold():
+            parts.append(f"Episode: {title}.")
     if intent:
         parts.append(f"Story theme: {intent}.")
     if hashtags:
@@ -773,10 +793,38 @@ def package_story(
             "Cinema releases require prepared platform titles, descriptions and relevant story-supported tags/keywords."
         )
     platforms_out: dict[str, Any] = {}
+    search_enabled = (story_facts.get("search_policy") or {}).get("required") is True
+    brief = (
+        search_brief(story_facts)
+        if (search_enabled or story_facts.get("search_brief"))
+        and any(p.startswith("youtube_") for p in selected_platforms)
+        else None
+    )
     for platform in selected_platforms:
         rendered_title = _title(story_facts, platform)
         description = _description(story_facts, platform, tags)
+        platform_keywords = (
+            youtube_keywords(
+                brief, _normal_topics(story_facts), _producer_keywords(story_facts)
+            )
+            if platform.startswith("youtube_")
+            and (search_enabled or story_facts.get("search_brief"))
+            else keywords
+        )
+        discovery = (
+            youtube_preflight(
+                story_facts, rendered_title, description, platform_keywords, brief=brief
+            )
+            if platform.startswith("youtube_") and brief
+            else None
+        )
         platform_queue = list(queue)
+        if discovery and discovery["required"] and not discovery["passed"]:
+            platform_queue.extend(
+                f"YouTube search preflight: {name}"
+                for name, passed in discovery["checks"].items()
+                if not passed
+            )
         media_asset = platform_asset_status[platform]
         caption_asset = platform_caption_status[platform]
         if not media_asset["verified"]:
@@ -818,7 +866,7 @@ def package_story(
         if platform_chapter_issue:
             platform_queue.append(platform_chapter_issue)
         platform_queue.extend(
-            _metadata_limits(platform, rendered_title, description, keywords)
+            _metadata_limits(platform, rendered_title, description, platform_keywords)
         )
         platform_queue.append(
             "Review captions, thumbnail, copyright/music evidence, and platform-native audience/disclosure controls."
@@ -827,7 +875,11 @@ def package_story(
             "title": rendered_title,
             "description": description,
             "hashtags": tags,
-            "keywords": keywords,
+            "keywords": platform_keywords,
+            "search_readiness": discovery,
+            "engagement_controls": engagement_plan(
+                platform, audience, story_facts.get("engagement_policy")
+            ),
             "copyright": copyright_record,
             "category": _category(story_facts, platform),
             "chapters": platform_chapters,
@@ -884,6 +936,18 @@ def package_story(
             "made_for_kids_reviewed": audience_reviewed,
             "realistic_ai_disclosure_reviewed": ai_reviewed,
             "prepared_platform_metadata": prepared_metadata,
+            "youtube_search_readiness": all(
+                not item["search_readiness"]
+                or not item["search_readiness"]["required"]
+                or item["search_readiness"]["passed"]
+                for item in platforms_out.values()
+            ),
+            "platform_metadata_within_limits": all(
+                not _metadata_limits(
+                    p, item["title"], item["description"], item["keywords"]
+                )
+                for p, item in platforms_out.items()
+            ),
             "production_attribution_present": all(
                 (
                     not _text(story_facts.get("production_credit_line"))

@@ -57,6 +57,11 @@ another channel is already running on 8511.
   relevant brand hashtags and search keywords, languages, age group and media
   destination. Corporate credits stay configurable. The first-publication year is
   bound to each story, rather than changed on every subsequent packaging run.
+- Review the inherited `search_policy`: new channels enable story-supported
+  YouTube title/opening-description, episode-context and metadata-limit gates.
+  Configure subject spelling aliases for this channel, not unrelated popular
+  terms. Packaging includes an observed-search checklist; it never claims forced
+  indexing or guaranteed rank. See [YouTube discovery](youtube-discovery.md).
 - Enter new provider keys in this channel's local Studio settings. The launcher
   isolates `config.toml`, storage/database and cost overrides. Configure the
   provider's actual billing controls; a local policy is not a provider hard cap.

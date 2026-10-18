@@ -30,6 +30,7 @@ from app.services.story_studio import (
     finishing_review_template,
 )
 from app.services.studio_cinema import policy_for
+from app.services.studio_discovery import search_observation
 from app.services.studio_native_movie import build_native_movie
 from app.services.studio_native_finish import finish_saved_timeline
 from app.services.studio_channel_setup import initialize_channel
@@ -91,6 +92,17 @@ if active_profile.get("production_attribution"):
         st.caption(
             "Credits are inserted into every prepared description. Copyright applies to owner-declared original production elements to the extent protected; asset/source licences, audience and AI reviews are separate release gates. Category labels must be available in the current platform."
         )
+
+with st.expander("Search and engagement defaults"):
+    st.json(
+        {
+            "search_policy": active_profile.get("search_policy", {}),
+            "engagement_policy": active_profile.get("engagement_policy", {}),
+        }
+    )
+    st.caption(
+        "Story relevance is checked before handoff; indexing and ranking need actual observations. Enable comments/publication notifications only where permitted. YouTube Made for Kids videos cannot enable either; viewer alert preferences remain their own."
+    )
 
 with st.expander("Set up a separate channel or another laptop"):
     st.caption(
@@ -927,7 +939,7 @@ with tab_assets:
         "Prepared publication metadata (JSON)",
         value="{}",
         key=f"metadata_{story_id}",
-        help="Optional overrides: platform_titles, platform_descriptions, topics, keywords and chapters. Cinema releases require prepared titles/descriptions for each selected platform. These become part of the exact approved package.",
+        help='Optional overrides: platform_titles, platform_descriptions, topics, keywords, chapters and search_brief. Example search_brief: {"primary_query": "main subject", "episode_query": "specific story phrase", "aliases": []}. Phrases must match the story or its configured spelling aliases. Cinema releases require prepared titles/descriptions for each selected platform. These become part of the exact approved package.',
     )
     if st.button("Draft platform metadata", disabled=not bool(master)):
         try:
@@ -960,6 +972,62 @@ with tab_assets:
     if current_package:
         package_doc = current_package["document"]
         st.caption(f"Package SHA-256: {package_doc.get('package_sha256')}")
+        with st.expander("YouTube search readiness and observed visibility"):
+            st.caption(
+                "Searchability and ranking are separate. These local checks make no provider calls and cannot force indexing. New uploads or edits can take a few days to appear."
+            )
+            for platform, item in package_doc.get("platforms", {}).items():
+                discovery = item.get("search_readiness")
+                if not discovery:
+                    continue
+                st.write(platform)
+                st.json(discovery)
+                st.link_button(
+                    "Test story search in YouTube", discovery["search_test_url"]
+                )
+                st.download_button(
+                    "Download search checklist",
+                    json.dumps(discovery, indent=2, ensure_ascii=False),
+                    file_name=f"{story_id}_{platform}_search-readiness.json",
+                    mime="application/json",
+                    key=f"search-download-{platform}",
+                )
+                observation_text = st.text_area(
+                    "Actual search observation (JSON)",
+                    value="{}",
+                    key=f"search-observation-{story_id}-{platform}",
+                    help="Record video_id, metadata_sha256 above, observed_at with timezone, query, context (sign-in/region/browser), evidence_reference, found and result_urls. Do not include account screenshots or credentials in the media archive.",
+                )
+                if st.button(
+                    "Save observed search result", key=f"save-search-{platform}"
+                ):
+                    try:
+                        observation = search_observation(
+                            discovery, json.loads(observation_text)
+                        )
+                        store.add_artifact(
+                            story_id,
+                            "search_observation",
+                            document={"platform": platform, **observation},
+                            provenance={
+                                "package_sha256": package_doc["package_sha256"]
+                            },
+                        )
+                        st.success(
+                            "Observed result saved separately from publication and creative approval."
+                        )
+                    except Exception as exc:
+                        st.error(str(exc))
+        with st.expander("Comments and publication notifications"):
+            st.caption(
+                "Defaults request comments and subscriber notifications where permitted. YouTube Made for Kids videos cannot enable either. Viewers control their own alerts; metadata preparation does not change live settings."
+            )
+            st.json(
+                {
+                    p: item.get("engagement_controls")
+                    for p, item in package_doc.get("platforms", {}).items()
+                }
+            )
         if package_doc.get("readiness", {}).get("required_checks_passed"):
             reviewer = st.text_input("Owner / reviewer name for local approval")
             if st.button("Approve exact package for manual handoff"):

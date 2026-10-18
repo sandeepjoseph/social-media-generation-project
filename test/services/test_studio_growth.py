@@ -71,6 +71,48 @@ def _asset(path):
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def test_required_search_preflight_holds_unrelated_copy_and_revokes_approval(tmp_path):
+    facts = _facts(tmp_path)
+    facts["search_policy"] = {"required": True}
+    package = package_story(facts, platforms=("youtube_long",))
+    assert package["required_approval"]["youtube_search_readiness"] is True
+    assert (
+        package["platforms"]["youtube_long"]["search_readiness"]["index_status"]
+        == "not_observed"
+    )
+    approval = {
+        "master_sha256": package["master"]["sha256"],
+        "package_sha256": package["package_sha256"],
+    }
+    facts["platform_descriptions"] = {"youtube_long": "Watch our wonderful channel."}
+    changed = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert changed["required_approval"]["youtube_search_readiness"] is False
+    assert changed["readiness"]["required_checks_passed"] is False
+    assert changed["approval"]["verified_for_exact_master_and_package"] is False
+
+
+def test_search_optimization_keeps_corporate_rights_footer(tmp_path):
+    facts = _facts(tmp_path)
+    facts.update(
+        search_policy={"required": True},
+        production_credit_line="Built by Example Media.",
+        rights_owner="Example Inc.",
+        first_publication_year=2026,
+    )
+    package = package_story(facts, platforms=("youtube_long",))
+    description = package["platforms"]["youtube_long"]["description"]
+    assert description.startswith("The Potter's Promise:")
+    assert "Built by Example Media." in description
+    assert "© 2026 Example Inc." in description
+    facts["platform_titles"] = {"youtube_long": "x" * 101}
+    assert (
+        package_story(facts, platforms=("youtube_long",))["required_approval"][
+            "platform_metadata_within_limits"
+        ]
+        is False
+    )
+
+
 def _facts(tmp_path):
     master = tmp_path / "master.mp4"
     master.write_bytes(b"approved-video")

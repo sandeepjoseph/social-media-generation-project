@@ -29,6 +29,8 @@ _PROFILE_FIELDS = (
     "story_values",
     "editorial_policy",
     "packaging_defaults",
+    "search_policy",
+    "engagement_policy",
     "caption_policy",
     "cinema_policy",
     "efficiency_policy",
@@ -177,6 +179,11 @@ def initialize_channel(
         },
     )
     packaging = profile.setdefault("packaging_defaults", {})
+    from app.services.studio_discovery import DEFAULT_POLICY
+    from app.services.studio_engagement import DEFAULT_POLICY as ENGAGEMENT_DEFAULTS
+
+    profile.setdefault("search_policy", copy.deepcopy(DEFAULT_POLICY))
+    profile.setdefault("engagement_policy", copy.deepcopy(ENGAGEMENT_DEFAULTS))
     packaging["platform_categories"] = copy.deepcopy(PLATFORM_CATEGORIES)
     packaging["platform_targets"] = [
         p for p in PLATFORM_CATEGORIES if p != "youtube_short"

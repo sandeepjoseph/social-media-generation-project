@@ -337,6 +337,8 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "story_values",
             "editorial_policy",
             "packaging_defaults",
+            "search_policy",
+            "engagement_policy",
             "brand_hashtag",
             "brand_hashtags",
             "director_template",
@@ -1607,6 +1609,7 @@ def _publication_metadata(request, metadata):
         "keywords",
         "topics",
         "chapters",
+        "search_brief",
     }
     if metadata is not None and (
         not isinstance(metadata, dict) or set(metadata) - fields
@@ -1615,7 +1618,16 @@ def _publication_metadata(request, metadata):
     result = {key: request[key] for key in fields if key in request}
     result.update(metadata or {})
     for key, value in result.items():
-        if key.startswith("platform_"):
+        if key == "search_brief":
+            if not isinstance(value, dict) or set(value) - {
+                "primary_query",
+                "episode_query",
+                "aliases",
+            }:
+                raise ValueError(
+                    "search_brief requires primary_query, episode_query and optional aliases"
+                )
+        elif key.startswith("platform_"):
             if not isinstance(value, dict) or any(
                 not isinstance(k, str) or not isinstance(v, str) or not v.strip()
                 for k, v in value.items()
@@ -2099,6 +2111,10 @@ def build_platform_package(
         "duration_seconds": qa_doc.get("duration_seconds"),
         "duration_verified": qa_doc.get("duration_verified") is True,
         "packaging_defaults": _prompt_safe_profile_value(packaging_defaults),
+        "search_policy": _prompt_safe_profile_value(profile.get("search_policy") or {}),
+        "engagement_policy": _prompt_safe_profile_value(
+            profile.get("engagement_policy") or {}
+        ),
         "ai_realistic_content": (human_review or {}).get("ai_realistic_content"),
         "platform_targets": list(selected_platforms),
         "platform_assets": platform_assets,
