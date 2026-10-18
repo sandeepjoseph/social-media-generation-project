@@ -22,7 +22,12 @@ from app.services.story_studio import (
     approve_package,
     research_request,
     validate_screenplay,
+    profile_status,
+    refresh_story_profile,
+    record_learning_rule,
+    import_performance_pilot_review,
 )
+from app.services.studio_cinema import policy_for
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
 
@@ -34,6 +39,39 @@ st.caption(
 )
 store = StudioStore()
 active_profile = load_director_profile()
+active_cinema = policy_for(active_profile)
+if active_cinema:
+    st.info(
+        f"Children's movie mode · ages 6–10 by default · full episodes {active_cinema['full_episode_min_seconds'] / 60:g}–{active_cinema['full_episode_max_seconds'] / 60:g} minutes · characters act and speak · lip-sync pilot required · Shorts are separate companions."
+    )
+    st.caption(
+        f"Production template {active_profile.get('template_revision', 'unversioned')} · applied learning revision {active_profile.get('learning_rules', {}).get('revision', 0)}"
+    )
+    with st.expander("Production standards and saved improvements"):
+        st.json(active_cinema)
+        st.json(active_profile.get("learning_rules", {}))
+        with st.form("production_learning"):
+            learned_criterion = st.text_input(
+                "Acceptance criterion",
+                placeholder="e.g. dialogue, lip-sync, acting, duration, continuity",
+            )
+            learned_rule = st.text_area("Improvement for future productions")
+            learned_applied = st.checkbox(
+                "Apply this instruction to future projects", value=False
+            )
+            if st.form_submit_button("Save production learning"):
+                try:
+                    record_learning_rule(
+                        text=learned_rule,
+                        criterion_id=learned_criterion,
+                        status="applied" if learned_applied else "experiment",
+                    )
+                    st.success(
+                        "Saved locally. New projects load applied rules; experiments remain unproven."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 st.caption(
     f"Creative profile: {active_profile['profile_id']} · snapshot {active_profile['profile_sha256'][:12]} · {active_profile['profile_visibility']}"
 )
@@ -79,8 +117,8 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
             )
             duration = st.number_input(
                 "Target duration (seconds)",
-                min_value=60,
-                max_value=3600,
+                min_value=int(active_cinema.get("full_episode_min_seconds", 60)),
+                max_value=int(active_cinema.get("full_episode_max_seconds", 3600)),
                 value=duration_default,
                 step=30,
             )
@@ -179,6 +217,17 @@ options = {
 selected_label = st.selectbox("Project", list(options))
 story_id = options[selected_label]
 story = store.story(story_id)
+version_status = profile_status(store, story_id)
+if version_status["cinema_required"] and version_status["needs_replan"]:
+    st.warning(
+        "This project's frozen template is older than the current production standards. Generation and release are held until it is replanned. Existing source media stays preserved."
+    )
+    if st.button("Apply latest template and replan this project"):
+        try:
+            refresh_story_profile(store, story_id)
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
 st.caption(
     f"Target {story['requested_duration_seconds']} seconds · current state is persisted in SQLite"
 )
@@ -232,6 +281,10 @@ with tab_research:
         st.dataframe(evidence, use_container_width=True)
 
 with tab_creative:
+    if active_cinema:
+        st.info(
+            "The JSON below illustrates the shape only. A complete film needs two speaking characters, the full dramatic arc, 6–8 minutes of meaningful scenes and the required character-performance fields; the validators enforce the complete package."
+        )
     st.caption(
         "The API call below is explicit and uses the existing MoneyPrinter provider configuration and new-job cost-router snapshot. It drafts a screenplay only; editorial approval remains required."
     )
@@ -241,9 +294,11 @@ with tab_creative:
                 "schema_version": 1,
                 "roles": [
                     {
-                        "role_id": "narrator",
-                        "name": "Narrator",
-                        "function": "guide",
+                        "role_id": "character-a" if active_cinema else "narrator",
+                        "name": "First character" if active_cinema else "Narrator",
+                        "kind": "character" if active_cinema else "narrator",
+                        "voice_id": "original-character-a",
+                        "function": "pursues the scene objective",
                         "voice_direction": "",
                     }
                 ],
@@ -252,7 +307,20 @@ with tab_creative:
                         "scene_id": "scene-01",
                         "setting": "",
                         "visual_intent": "",
-                        "lines": [{"role_id": "narrator", "text": "", "delivery": ""}],
+                        "dramatic_purpose": "",
+                        "action": "",
+                        "story_beat": "setup",
+                        "estimated_duration_seconds": 60,
+                        "lines": [
+                            {
+                                "line_id": "line-01",
+                                "role_id": "character-a"
+                                if active_cinema
+                                else "narrator",
+                                "text": "",
+                                "delivery": "",
+                            }
+                        ],
                     }
                 ],
             },
@@ -322,6 +390,25 @@ with tab_creative:
             st.error(f"Storyboard draft failed: {exc}")
 
 with tab_flow:
+    if active_cinema:
+        st.info(
+            "Generate and review the two designated native-dialogue pilot shots first. Bulk generation stays held until the exact pilot clips pass wording, speaker identity, acting and full-utterance lip-sync review. A silent or narrator-only take cannot substitute."
+        )
+        pilot_file = st.file_uploader(
+            "Two-character performance pilot review JSON",
+            type=["json"],
+            key="cinema_pilot",
+        )
+        if pilot_file and st.button("Import reviewed performance pilot"):
+            try:
+                import_performance_pilot_review(
+                    store, story_id, json.loads(pilot_file.getvalue())
+                )
+                st.success(
+                    "Pilot accepted for this exact storyboard and media. Re-export the Flow bundle to release its remaining shots."
+                )
+            except Exception as exc:
+                st.error(str(exc))
     st.warning(
         "Flow uses a documented manual browser handoff. This page does not automate the account, submit jobs, or assume costs."
     )

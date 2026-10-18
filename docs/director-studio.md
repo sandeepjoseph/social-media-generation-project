@@ -44,3 +44,70 @@ Every localized media variant must be registered separately with its media file,
 Copy [`../examples/story-request.example.json`](../examples/story-request.example.json) and edit the fields. The contract includes age range/language, fiction taxonomy, learning intent, platform targets, and a target duration. A new project can proceed without research, but quality/package gates stay blocked until the required evidence, rights records, media QA, and per-platform assets are present. `import-qa` accepts a JSON object with `status: "passed"`, matching `story_id`, current `script_sha256` and `master_sha256`, a non-empty `reviewer`, and `technical_decode_pass`, `visual_review_pass`, and `audio_review_pass` set to true. The local decode is independently checked before those attestations are accepted.
 
 The workflow map is `request → research evidence → screenplay → storyboard → manual Flow receipts → assembled master → bound QA → platform-specific package → exact-hash owner approval → local analytics import`. Each completed phase records input/output hashes in SQLite; incomplete or invalidated work remains visible instead of being represented as done.
+
+## Performed children's films
+
+External profiles can enable the built-in `cinema_policy` with `{"enabled": true}`.
+This is an opt-in feature layered onto the existing workflow; generic video jobs
+and historical imports retain their contracts. Contract version 2 defaults to a
+360–480 second full episode, two speaking characters, no more than 20% narrator
+words, at least 55% native-dialogue shot time and 75% character performance time.
+These are production defaults, not a scientific claim about an ideal attention
+span. A short companion is registered separately and never satisfies full-film
+duration. Local profiles can configure the numeric policy for another audience.
+
+The script must identify character/narrator roles, stable original voice IDs,
+unique line IDs, scene action, dramatic purpose, estimated duration and a complete
+setup/problem/attempt/turn/resolution arc. The storyboard delivers each exact line
+once in its scene. Native-dialogue takes name the single visible speaker, assigned
+voice, exact words, gaze, emotional turn, blocking, costume and continuity. They
+require native speech/lip-sync capabilities and `audio_pipeline: preserve_native_av`.
+Dialogue must fit the take with performance handles. Camera-only image movement,
+silent people under substituted narration, repeated footage and time-stretching
+are forbidden production substitutions; named performance review remains necessary
+because structural validation cannot see acting or infer lip sync.
+
+The first Flow export designates two different speaking characters as the pilot.
+Only those shots have `generation_allowed: true`; the rest remain held. The
+receipt importer rejects bulk receipts until an exact-board/policy/clip-hash pilot
+review passes. It also measures cinema clip duration against its shot contract.
+After importing the pilot review, re-export the same board to release the rest.
+This controls the local workflow; manual provider controls remain an operator
+handoff, not an upload/generation API supplied by this application.
+
+Each speaking clip needs a named review of the **whole utterance at normal and
+half speed**, exact words, correct speaker, lip sync, preserved A/V timing and
+voice consistency, plus at least three distinct timed audible/visible articulation
+observations. Correct transcription or still frames alone cannot pass. The final
+QA report's `performance_review` binds the current storyboard and resolved policy
+hash, covers every receipt asset hash, and records full-film acting, continuity,
+age fit and scene-playback review. The outer report still binds the script and
+final-master hashes. Measured final duration is independently gated; decoding and
+caption checks alone cannot approve a film. Human attestations are recorded as
+attestations; the software does not claim an automatic phoneme-perfect detector.
+
+## Current templates and production learning
+
+New projects read the external profile, director template, verified references and
+applied learning rules anew, then freeze those hashes and the implementation
+content identity/Git revision. No template is silently swapped under an active
+production. The UI shows drift; cinema generation, packaging and approval stop
+until **Apply latest template and replan** is explicitly chosen. Replanning keeps
+evidence/source media and the artifact history, resets creative and later phases,
+updates an out-of-range full-episode target and revokes prior approvals. It refuses
+to change a project with a running phase.
+
+The profile may set `private_learning_log` to an external JSON file with
+`revision` and `entries`. Entries with `status: applied` become new-project rules;
+`experiment` entries do not. The UI saves either, and each change advances the
+revision. This provides a reusable improvement history, not an unattended claim
+that quality increases every day. These private rules never enter tracked code.
+The existing upstream monitor opens review PRs; it never replaces this custom
+build with an unreviewed upstream package during production.
+
+```sh
+python -m app.services.story_studio profile-status STORY_ID
+python -m app.services.story_studio refresh-profile STORY_ID
+python -m app.services.story_studio import-performance-pilot STORY_ID pilot-review.json
+python -m app.services.story_studio record-learning --criterion acting --text "Keep listening reactions motivated" --status applied
+```
