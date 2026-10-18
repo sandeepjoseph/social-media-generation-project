@@ -182,7 +182,9 @@ def test_complete_performed_film_contract_passes():
     assert cinema.pilot_ids(board) == ["shot-0-0", "shot-0-1"]
 
 
-def test_native_export_preserves_provider_take_length_and_exact_prompt(configured):
+def test_native_export_preserves_provider_take_length_and_exact_prompt(
+    configured, tmp_path, monkeypatch
+):
     store, sid, script, board = ready_story(configured)
     shot = board["shots"][0]
     original_prompt = shot["prompt"]
@@ -201,6 +203,21 @@ def test_native_export_preserves_provider_take_length_and_exact_prompt(configure
     assert exported["duration_seconds"] == 8
     assert exported["timeline_duration_seconds"] == 5.375
     assert exported["prompt"] == original_prompt
+    media = tmp_path / "native-edit-contract.mp4"
+    media.write_bytes(
+        b"Hash fixture only; duration measurement is mocked, no media-quality claim."
+    )
+    receipt = {
+        "shot_id": exported["shot_id"],
+        "prompt_sha256": exported["prompt_sha256"],
+        "asset_path": str(media),
+        "provider": "test",
+    }
+    monkeypatch.setattr(studio, "video_duration_seconds", lambda p: 8.0)
+    with pytest.raises(ValueError, match="duration must match"):
+        store.import_flow_receipt(sid, receipt)
+    monkeypatch.setattr(studio, "video_duration_seconds", lambda p: 5.375)
+    assert store.import_flow_receipt(sid, receipt)["shot_id"] == exported["shot_id"]
 
 
 @pytest.mark.parametrize("seconds", [56, 170, 256, 359, 481, float("nan"), True, None])

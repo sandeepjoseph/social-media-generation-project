@@ -1124,7 +1124,10 @@ class StudioStore:
         policy, board = _cinema_context(self, story_id)
         if policy:
             measured = video_duration_seconds(asset)
-            if measured is None or abs(measured - shot["duration_seconds"]) > 0.25:
+            timeline_duration = shot.get(
+                "timeline_duration_seconds", shot["duration_seconds"]
+            )
+            if measured is None or abs(measured - timeline_duration) > 0.25:
                 raise ValueError(
                     "cinema shot duration must match the reviewed storyboard"
                 )
