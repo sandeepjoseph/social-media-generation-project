@@ -111,3 +111,37 @@ python -m app.services.story_studio refresh-profile STORY_ID
 python -m app.services.story_studio import-performance-pilot STORY_ID pilot-review.json
 python -m app.services.story_studio record-learning --criterion acting --text "Keep listening reactions motivated" --status applied
 ```
+
+## Reviewed native movie assembly
+
+The Quality tab assembles an explicit reviewed selection of moving clips.
+The selection binds the current storyboard, provider recipes, immutable component
+decisions, source hashes and original frame intervals. Every scene appears once
+in story order. Missing or repeated footage, changed dialogue, unreviewed acting,
+time stretching and substituted narration are held. Editorial duration may differ
+from provider take length only with explicit preserved-A/V edit provenance.
+
+Build a **review cut** first with original actor audio and matching SRT, VTT and
+burned captions. Final mixing needs a named whole-playback review bound to the
+exact ordered media plan and review-cut hash, plus music rights evidence bound
+to the actual score. Audio and captions must share the story locale. Non-English
+captions need reviewed line breaks and a verified font; English is no fallback.
+
+Native 24fps shots and 48kHz stereo PCM are concatenated in one pass before the
+final AAC export, avoiding joined per-shot AAC encoder padding. Full-frame decode
+and timestamp checks do not establish acting, lip sync or editorial quality.
+Exports retain `publication_allowed: false` pending final Quality review and never
+overwrite an existing output. The UI registers generated videos and captions
+through the configured private media-delivery policy, preserving dated,
+story-named copies and source hashes.
+
+```sh
+python -m app.services.studio_native_movie storyboard.json selection.json \
+  --output review-cut.mp4 --review-cut
+python -m app.services.studio_native_movie storyboard.json selection-with-review.json \
+  --output final-candidate.mp4 --music score.wav --music-rights score-rights.json
+```
+
+CLI rendering is local and never publishes or alters accounts. Register CLI
+outputs in the Studio or reconcile them through the media archive before delivery.
+Commercial prompts and selections remain local.

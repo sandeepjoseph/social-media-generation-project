@@ -28,6 +28,7 @@ from app.services.story_studio import (
     import_performance_pilot_review,
 )
 from app.services.studio_cinema import policy_for
+from app.services.studio_native_movie import build_native_movie
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
 
@@ -450,6 +451,125 @@ with tab_qa:
     st.info(
         f"Captions must be fluent-reviewed and match the story target and spoken audio locale ({story_locale}). English captions cannot approve a Malayalam variant."
     )
+    if active_cinema:
+        with st.expander("Assemble reviewed character performances"):
+            st.caption(
+                "Uses each reviewed moving scene in story order with its original actor audio. "
+                "A review cut allows full-sequence checks before the final music mix. "
+                "Rendering never approves publication."
+            )
+            native_board = st.text_input(
+                "Reviewed storyboard file", key=f"native_board_{story_id}"
+            )
+            native_selection = st.text_input(
+                "Reviewed scene selection file", key=f"native_selection_{story_id}"
+            )
+            native_output = st.text_input(
+                "New movie output path (.mp4)", key=f"native_output_{story_id}"
+            )
+            native_review = st.checkbox(
+                "Build a review cut before the final sound mix",
+                value=True,
+                key=f"native_review_{story_id}",
+            )
+            native_font = st.text_input(
+                "Verified caption font", value="Arial", key=f"native_font_{story_id}"
+            )
+            native_music = st.text_input(
+                "Original or licensed music file (final mix)",
+                key=f"native_music_{story_id}",
+            )
+            native_rights = st.text_input(
+                "Music rights evidence file (final mix)",
+                key=f"native_rights_{story_id}",
+            )
+            if st.button(
+                "Build movie for review",
+                disabled=not all([native_board, native_selection, native_output]),
+            ):
+                try:
+                    if profile_status(store, story_id)["needs_replan"]:
+                        raise ValueError(
+                            "Apply the latest production template and explicitly replan before assembling"
+                        )
+                    current_board = store.latest_artifact(story_id, "storyboard")
+                    supplied_board = json.loads(Path(native_board).read_text())
+                    if not current_board or supplied_board != current_board["document"]:
+                        raise ValueError("Use the current story's reviewed storyboard")
+                    selected = json.loads(Path(native_selection).read_text())
+                    if (
+                        selected.get("storyboard_artifact_sha256")
+                        != current_board["sha256"]
+                    ):
+                        raise ValueError(
+                            "Scene selection must bind this exact storyboard artifact"
+                        )
+                    if selected.get("locale") != story_locale:
+                        raise ValueError(
+                            "Movie audio and captions must match this story's language"
+                        )
+                    receipts = {r["shot_id"]: r for r in store.flow_receipts(story_id)}
+                    for entry in selected.get("shots", []):
+                        slot = next(
+                            (
+                                s
+                                for s in supplied_board["shots"]
+                                if s["shot_id"] == entry["shot_id"]
+                            ),
+                            {},
+                        )
+                        if slot.get(
+                            "speech_mode"
+                        ) == "native_dialogue" and receipts.get(
+                            entry["shot_id"], {}
+                        ).get("asset_sha256") != entry.get("sha256"):
+                            raise ValueError(
+                                "Import the exact reviewed native performance receipt before assembly"
+                            )
+                    with st.spinner("Assembling reviewed scenes and matching captions"):
+                        result = build_native_movie(
+                            native_board,
+                            native_selection,
+                            native_output,
+                            review_cut=native_review,
+                            music=native_music or None,
+                            music_rights=native_rights or None,
+                            caption_font=native_font,
+                        )
+                    delivery = []
+                    for media in [result["master"], result["source_native_master"]]:
+                        artifact = store.add_artifact(
+                            story_id,
+                            "generated_video",
+                            path=media["path"],
+                            provenance={
+                                "source": "generated",
+                                "locale": story_locale,
+                                "publication_allowed": False,
+                            },
+                        )
+                        delivery.append(artifact["provenance"].get("delivery_archive"))
+                    for captions in result["captions"]:
+                        artifact = store.add_artifact(
+                            story_id,
+                            "caption_track",
+                            path=captions["path"],
+                            provenance={
+                                "locale": story_locale,
+                                "publication_allowed": False,
+                            },
+                        )
+                        delivery.append(artifact["provenance"].get("delivery_archive"))
+                    result["delivery_archive"] = delivery
+                    store.add_artifact(
+                        story_id, "native_movie_candidate", document=result
+                    )
+                    st.success(
+                        "Movie saved for audiovisual review. Publication remains subject to the Quality checks."
+                    )
+                    st.video(result["master"]["path"])
+                except Exception as exc:
+                    st.error(str(exc))
     qa_master = st.text_input(
         "Assembled master for hash-bound QA", key=f"qa_master_{story_id}"
     )

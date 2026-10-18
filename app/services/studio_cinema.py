@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "2.0.0"
+CONTRACT_VERSION = "2.1.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",
@@ -74,9 +74,14 @@ def implementation_identity(repo: Path) -> dict:
         "app/services/studio_cinema.py",
         "app/services/story_studio.py",
         "webui/pages/2_Director_Studio.py",
+        "app/services/studio_native_movie.py",
+        "app/services/studio_native_media.py",
     )
     hashes = {
-        name: hashlib.sha256((repo / name).read_bytes()).hexdigest() for name in files
+        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
+        if (repo / name).is_file()
+        else "missing"
+        for name in files
     }
     try:
         revision = subprocess.check_output(
@@ -248,8 +253,34 @@ def storyboard_issues(board: dict, screenplay: dict, policy: dict) -> list[str]:
                 set(shot.get("capabilities", []))
             ):
                 issues.append(f"cinema:{sid}:speech_capable_route_required")
+            # The provider records a complete supported-length take. A reviewed
+            # native edit can remove a stutter or a lead without stretching the
+            # retained performance. Keep generation planning and editorial time
+            # separate; never solve a length mismatch by slowing the clip.
+            provider_duration = shot.get("provider_take_duration_seconds", duration)
+            if (
+                not finite_number(provider_duration)
+                or provider_duration < duration
+                or provider_duration > 60
+            ):
+                issues.append(f"cinema:{sid}:invalid_provider_take_duration")
+                provider_duration = duration
+            if provider_duration != duration:
+                edit = shot.get("native_editorial_plan") or {}
+                if (
+                    edit.get("original_av_timing_preserved") is not True
+                    or edit.get("retiming") is not False
+                    or edit.get("voice_replacement") is not False
+                    or not str(edit.get("provenance_sha256", "")).strip()
+                ):
+                    issues.append(f"cinema:{sid}:native_edit_provenance_required")
             capacity = (
-                max(0, duration - policy["dialogue_handle_seconds"])
+                max(
+                    0,
+                    min(
+                        duration, provider_duration - policy["dialogue_handle_seconds"]
+                    ),
+                )
                 * policy["max_dialogue_words_per_second"]
             )
             if len(str(speech.get("text", "")).split()) > capacity:
