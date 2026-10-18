@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from datetime import datetime
 import json
 import math
 import os
+from zoneinfo import ZoneInfo
 import re
 import subprocess
 import sqlite3
@@ -23,6 +25,9 @@ from typing import Any, Callable
 
 from app.utils import utils
 from app.services import studio_cinema as cinema
+from app.services.studio_efficiency import VerifiedDecodeCache
+
+_technical_decode_cache = VerifiedDecodeCache()
 
 PHASES = (
     "research",
@@ -70,6 +75,10 @@ def digest_file(path: str | Path) -> str:
 
 
 def sample_decode_video(path: str | Path) -> tuple[bool, str]:
+    return _technical_decode_cache.check(path, _sample_decode_video)
+
+
+def _sample_decode_video(path: str | Path) -> tuple[bool, str]:
     """Decode a first and final video frame with the bundled MoviePy FFmpeg."""
     try:
         import imageio_ffmpeg
@@ -144,7 +153,10 @@ def snapshot_job_config(
     from app.services.cost_router_overrides import apply_new_job_overrides
 
     source = base_config if base_config is not None else config.app
-    path = Path(utils.root_dir()) / "cost-router-overrides.json"
+    path = Path(
+        os.environ.get("STORY_STUDIO_COST_OVERRIDES_PATH")
+        or Path(utils.root_dir()) / "cost-router-overrides.json"
+    )
     snapshot = apply_new_job_overrides(dict(source), path)
     snapshot["_cost_router_job_id"] = str(job_id)
     return snapshot
@@ -335,6 +347,8 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "cinema_policy",
             "mandatory_cinema",
             "required_cinema_contract_version",
+            "production_attribution",
+            "efficiency_policy",
             "template_revision",
             "production_build",
             "learning_rules",
@@ -1947,6 +1961,15 @@ def build_platform_package(
     profile = _story_profile(story["request"])
     packaging_defaults = profile.get("packaging_defaults") or {}
     prepared_metadata = _publication_metadata(story["request"], metadata)
+    attribution = profile.get("production_attribution") or {}
+    if attribution.get("required") is True and (
+        not attribution.get("credit_line")
+        or not attribution.get("required_hashtags")
+        or not attribution.get("search_keywords")
+    ):
+        raise ValueError(
+            "Required production attribution needs its credit line, brand hashtags and search keywords"
+        )
     master = Path(master_path).expanduser().resolve()
     master_artifact = store.add_artifact(
         story_id,
@@ -2080,6 +2103,22 @@ def build_platform_package(
         "platform_targets": list(selected_platforms),
         "platform_assets": platform_assets,
         "cinema_metadata_required": bool(cinema.policy_for(profile)),
+        "production_credit_line": attribution.get("credit_line", ""),
+        "required_brand_hashtags": attribution.get("required_hashtags", []),
+        "producer_keywords": attribution.get("search_keywords", []),
+        "copyright_required": attribution.get("copyright_required") is True,
+        "rights_owner": attribution.get("rights_owner", ""),
+        "first_publication_year": int(
+            str(
+                story["request"].get("first_publication_year")
+                or datetime.fromtimestamp(
+                    story["created_at"],
+                    ZoneInfo(
+                        (profile.get("media_delivery") or {}).get("timezone", "UTC")
+                    ),
+                ).year
+            )
+        ),
         **prepared_metadata,
     }
     package = package_story(facts, platforms=selected_platforms, approval=None)
@@ -2229,7 +2268,9 @@ def request_screenplay_draft(
             ]
         )
     snapshot = snapshot_job_config(story_id, app_config)
-    prompt_text = json.dumps(prompt, ensure_ascii=False)
+    from app.services.studio_efficiency import cache_friendly_prompt
+
+    prompt_text = cache_friendly_prompt(prompt)
     creative_phase = store.run_phase(
         story_id,
         "creative",
@@ -2553,7 +2594,9 @@ def request_storyboard_draft(
                 "Reserve a two-character dialogue pilot before bulk spending. Cheap silent video is not a fallback for failed dialogue. Keep generation prompts compact and reuse approved actor/set references.",
             ]
         )
-    prompt_text = json.dumps(prompt, ensure_ascii=False)
+    from app.services.studio_efficiency import cache_friendly_prompt
+
+    prompt_text = cache_friendly_prompt(prompt)
     snapshot = snapshot_job_config(story_id, app_config)
     inputs = {
         "screenplay_sha256": screenplay_artifact["sha256"],
@@ -2633,6 +2676,9 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             raise ValueError("cinema preproduction rejected: " + "; ".join(issues))
     pilots = cinema.pilot_ids(board["document"]) if policy else []
     pilot_accepted = _pilot_passed(store, story_id)
+    from app.services.studio_efficiency import saved_take
+
+    saved_receipts = store.flow_receipts(story_id)
     for asset in profile.get("approved_assets", []):
         asset_path = Path(str(asset.get("path", "")))
         if not asset_path.is_file() or digest_file(asset_path) != asset.get("sha256"):
@@ -2677,6 +2723,7 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         # director treatment/camera/lighting/weather/props/audio/transition
         # fields, while stripping local absolute paths and credential-like data.
         exported_shot = _prompt_safe_profile_value(shot)
+        reuse = saved_take(shot, saved_receipts)
         bundle_shots.append(
             {
                 **exported_shot,
@@ -2698,7 +2745,10 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
                 "handoff": "manual_browser_only",
                 "generation_allowed": shot.get("new_generation_required", True)
                 is not False
+                and reuse["generation_allowed"]
                 and (not policy or pilot_accepted or shot["shot_id"] in pilots),
+                "reuse": reuse,
+                "max_outputs_per_request": 1,
             }
         )
     bundle = {
@@ -2721,6 +2771,21 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         "approved_reference_assets": list(archived_assets.values()),
         "shots": bundle_shots,
         "provider_account_check_required": "hold_without_retry_or_account_switch",
+        "efficiency": {
+            "saved_matching_takes": sum(
+                s["reuse"]["status"] == "saved_take_available_review_still_required"
+                for s in bundle_shots
+            ),
+            "new_requests_currently_allowed": sum(
+                s["generation_allowed"] for s in bundle_shots
+            ),
+            "duplicate_requests_blocked": True,
+            "native_voice_and_timing_preserved": True,
+            "cost_basis": "Flow credits per output; shorter prompts alone do not establish credit savings",
+            "new_generation_credit_cost": None,
+            "cost_status": "requires_current_account_UI_quote",
+            "quality_gates_unchanged": True,
+        },
         "receipt_schema": {
             "shot_id": "",
             "prompt_sha256": "",

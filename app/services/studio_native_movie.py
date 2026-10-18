@@ -562,6 +562,7 @@ def build_native_movie(
         "locale": plan["locale"],
         "media_plan_digest": media_plan_digest(plan),
         "selection_sha256": sha(selection_path),
+        "selection_path": str(selection_path.resolve()),
         "storyboard_sha256": sha(board_path),
         "master": {"path": str(output.resolve()), "sha256": sha(output)},
         "source_native_master": {"path": str(raw.resolve()), "sha256": sha(raw)},

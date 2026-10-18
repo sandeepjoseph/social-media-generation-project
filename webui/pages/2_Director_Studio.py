@@ -1,6 +1,7 @@
 """Local director-led workflow page. Every provider action is an explicit click."""
 
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -30,6 +31,8 @@ from app.services.story_studio import (
 )
 from app.services.studio_cinema import policy_for
 from app.services.studio_native_movie import build_native_movie
+from app.services.studio_native_finish import finish_saved_timeline
+from app.services.studio_channel_setup import initialize_channel
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
 
@@ -77,6 +80,54 @@ if active_cinema:
 st.caption(
     f"Creative profile: {active_profile['profile_id']} · snapshot {active_profile['profile_sha256'][:12]} · {active_profile['profile_visibility']}"
 )
+if active_profile.get("production_attribution"):
+    with st.expander("Company credits, copyright and category defaults"):
+        st.json(active_profile["production_attribution"])
+        st.json(
+            (active_profile.get("packaging_defaults") or {}).get(
+                "platform_categories", {}
+            )
+        )
+        st.caption(
+            "Credits are inserted into every prepared description. Copyright applies to owner-declared original production elements to the extent protected; asset/source licences, audience and AI reviews are separate release gates. Category labels must be available in the current platform."
+        )
+
+with st.expander("Set up a separate channel or another laptop"):
+    st.caption(
+        "Copies reusable production rules and credits into fresh private state. Connect that channel's own accounts and credentials after launch. Existing productions are not changed."
+    )
+    with st.form("separate_channel_setup"):
+        channel_slug = st.text_input("New channel ID", placeholder="my-new-channel")
+        channel_label = st.text_input("New channel name")
+        channel_root = st.text_input(
+            "New private channel folder",
+            value=str(Path.home() / "StoryStudioChannels" / "new-channel"),
+        )
+        channel_owner = st.text_input(
+            "Rights owner for original production elements",
+            value=(active_profile.get("production_attribution") or {}).get(
+                "rights_owner", ""
+            ),
+        )
+        if st.form_submit_button("Create isolated channel setup"):
+            try:
+                initialized = initialize_channel(
+                    channel_root,
+                    channel_id=channel_slug,
+                    channel_name=channel_label,
+                    source_profile=os.environ.get("STORY_STUDIO_PROFILE_PATH"),
+                    rights_owner=channel_owner or None,
+                )
+                st.success(
+                    "Fresh channel setup saved. No accounts, credentials, approvals or media were copied."
+                )
+                st.json(initialized)
+                st.code(
+                    f'python -m app.services.studio_channel_setup launch --root "{initialized["channel_root"]}" --port 8512',
+                    language="bash",
+                )
+            except Exception as exc:
+                st.error(str(exc))
 
 with st.expander("Start one story", expanded=not bool(store.list_stories())):
     with st.form("new_story"):
@@ -484,6 +535,21 @@ with tab_qa:
                 "Music rights evidence file (final mix)",
                 key=f"native_rights_{story_id}",
             )
+            st.caption(
+                "For caption/sound changes, reuse an existing verified native timeline to avoid another scene assembly or provider generation."
+            )
+            native_saved_record = st.text_input(
+                "Saved native timeline receipt (optional)",
+                key=f"native_saved_record_{story_id}",
+            )
+            native_saved_plan = st.text_input(
+                "Its original selection plan (optional)",
+                key=f"native_saved_plan_{story_id}",
+            )
+            native_cleanup = st.text_input(
+                "Source-evidenced audio cleanup JSON (optional)",
+                key=f"native_cleanup_{story_id}",
+            )
             if st.button(
                 "Build movie for review",
                 disabled=not all([native_board, native_selection, native_output]),
@@ -528,15 +594,36 @@ with tab_qa:
                                 "Import the exact reviewed native performance receipt before assembly"
                             )
                     with st.spinner("Assembling reviewed scenes and matching captions"):
-                        result = build_native_movie(
-                            native_board,
-                            native_selection,
-                            native_output,
-                            review_cut=native_review,
-                            music=native_music or None,
-                            music_rights=native_rights or None,
-                            caption_font=native_font,
-                        )
+                        if native_saved_record:
+                            if not all(
+                                [native_saved_plan, native_music, native_rights]
+                            ):
+                                raise ValueError(
+                                    "Saved-timeline finishing requires the original plan and music rights"
+                                )
+                            result = finish_saved_timeline(
+                                native_board,
+                                native_selection,
+                                native_saved_record,
+                                native_saved_plan,
+                                native_output,
+                                music_path=native_music,
+                                music_rights_path=native_rights,
+                                caption_font=native_font,
+                                cleanup=json.loads(Path(native_cleanup).read_text())
+                                if native_cleanup
+                                else {},
+                            )
+                        else:
+                            result = build_native_movie(
+                                native_board,
+                                native_selection,
+                                native_output,
+                                review_cut=native_review,
+                                music=native_music or None,
+                                music_rights=native_rights or None,
+                                caption_font=native_font,
+                            )
                     delivery = []
                     for media in [result["master"], result["source_native_master"]]:
                         artifact = store.add_artifact(

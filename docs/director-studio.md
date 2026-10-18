@@ -243,3 +243,69 @@ manual handoff restrictions remain in effect.
 Each story retains its own movie, captions, metadata, reviews, publication
 receipts and dated media archive. New policy revisions do not combine films,
 replace old public uploads or silently reuse their approvals.
+
+
+## Reuse before generation
+
+Flow exports now disable another request when a matching shot/prompt receipt
+identifies an unchanged saved take. This includes pending review: saved work
+needs evaluation or explicit replanning, not another automatic paid request.
+A missing/changed previously saved take is held for recovery. Every request
+specifies one output; a request producing several outputs can consume credits
+for each. Existing acting, lip-sync, duration and final-film gates still apply.
+
+`studio_efficiency.reusable_asset` verifies exact recipe, rights, asset and review
+hashes for approved stills and narrator bridges. Scene/character/style/costume,
+lighting/composition/output settings, or exact words/voice/locale must match.
+Native character speech is never a separately cached TTS substitute. New scene
+context still requires review, even when the asset is reusable.
+
+LLM prompts retain every rule, exact dialogue and evidence while removing
+duplicated template fields and placing stable production rules first. The
+provider decides cache eligibility; report actual usage rather than promising
+a discount. A bounded local technical-decode cache reuses only a real passing
+decode of identical SHA-256 bytes under the same decoder. It rehashes before
+and after checking; it never caches creative or synchronization approval.
+
+The external profile may require `production_attribution` with `credit_line`,
+`required_hashtags` (at most four, reserving one of five for the story), and
+`search_keywords`. These owner-supplied producer facts are separate from story
+topics. Every platform description receives the exact credit and canonical tags,
+including supplied description overrides; company names enter search keywords.
+Credits and tags are included in the exact approval hash. No company names or
+commercial relationships are hardcoded in the public application.
+
+Cost research, checked 2026-10-18:
+
+- [Flow credits](https://support.google.com/flow/answer/16526234?hl=en): costs are per output, depend on model/plan, and must be rechecked in the current prompt settings. Shortening a prompt alone does not establish credit savings.
+- [Flow capabilities](https://support.google.com/flow/answer/16352836?hl=en): image ingredients and available features differ by model; included no-charge image options may be candidates after actual quality review.
+- [Google video best practices](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/video/best-practice): use a high-quality staged source, focus image-to-video instructions on the motion, and keep one focused event per short take.
+- [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching): stable prefixes enable eligible cache reuse; billing and cache eligibility depend on the model.
+- [OpenAI image generation](https://developers.openai.com/api/docs/guides/image-generation): track actual usage/settings; eligible image-input cache pricing is API-route-specific.
+- [YouTube monetization policies](https://support.google.com/youtube/answer/1311392?hl=en): asset reuse must still create distinct, original, useful storytelling. Repeated footage, mass-produced near-duplicates and padding are not cost optimizations.
+
+Use current, account-confirmed quotes and an accepted two-character native pilot
+before switching to a cheaper speech model. Draft-resolution generation and
+upscaling remain experiments until their final performance/visual quality passes.
+Prefer local caption/audio repairs with documented source/packet identities,
+approved set/actor references, cached unchanged planning, and regeneration of
+only the failed shot. Keep subscription allowances, Flow credits and API money
+as separate ledgers; never treat missing prices or unmeasured savings as zero.
+
+### Local finishing from a saved native timeline
+
+The Quality assembly form and `app.services.studio_native_finish` can reuse an
+existing, hash-bound native picture/PCM timeline for corrected captions and a
+fresh sound mix. Source and current plans must retain identical ordered actor
+clips, original frame intervals, words, voices, durations and locale. The source
+receipt must bind its original plan and complete technical decode. Corrected
+caption candidates pass the same readability checks before rendering.
+
+Audio cleanup requires a reason and unchanged actual review-evidence file hash
+for every altered shot. Sample-based trims/padding retain the original clock;
+action-only slots carry no unintended generated dialogue. Original speech is
+never resynthesized. Music and license evidence are independently hashed.
+This is a local render with zero new provider generations, not a quality pass.
+The entire final video and audio are decoded; final audiovisual/creative review
+and current profile/version gates still determine release. Every output uses a
+new filename, and the Studio archives generated outputs and caption sidecars.

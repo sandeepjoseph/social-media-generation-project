@@ -91,7 +91,7 @@ def root_dir():
 
 
 def storage_dir(sub_dir: str = "", create: bool = False):
-    d = os.path.join(root_dir(), "storage")
+    d = os.path.abspath(os.path.expanduser(os.environ.get("STORY_STUDIO_STORAGE_ROOT") or os.path.join(root_dir(), "storage")))
     if sub_dir:
         d = os.path.join(d, sub_dir)
     if create:

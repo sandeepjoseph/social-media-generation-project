@@ -198,10 +198,29 @@ def _hashtags(facts: dict[str, Any]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
 
+    required = _items(facts.get("required_brand_hashtags"))
+    if len(required) > 4:
+        raise ValueError("Reserve at least one of five hashtags for the story")
+    for raw in required:
+        token = raw.removeprefix("#")
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_]{1,32}", token)
+            or token.casefold() in _TREND_WORDS
+            or _UNSUPPORTED_PROMISES.search(token)
+        ):
+            raise ValueError(
+                "Required brand hashtags must be literal relevant brand tokens"
+            )
+        if ("#" + token).casefold() not in seen:
+            result.append("#" + token)
+            seen.add(("#" + token).casefold())
+
     # Brand tags are accepted only when the caller supplies a literal short
     # token. This deliberately excludes phrases, URLs, calls to action, and
     # trend or performance claims.
     for raw_brand in _items(facts.get("brand_hashtags")):
+        if required:
+            break
         token = raw_brand[1:] if raw_brand.startswith("#") else raw_brand
         if (
             not re.fullmatch(r"[A-Za-z0-9_]{1,32}", token)
@@ -453,7 +472,7 @@ def _description(facts: dict[str, Any], platform: str, hashtags: list[str]) -> s
         else ""
     )
     if supplied:
-        return supplied
+        return _credit_description(supplied, facts, hashtags)
     title = _text(facts.get("title"))
     intent = _text(facts.get("moral_or_learning_intent"))
     synopsis = _text(facts.get("synopsis") or facts.get("story_summary"))
@@ -464,7 +483,70 @@ def _description(facts: dict[str, Any], platform: str, hashtags: list[str]) -> s
         parts.append(f"Story theme: {intent}.")
     if hashtags:
         parts.append(" ".join(hashtags))
-    return "\n\n".join(parts)
+    return _credit_description("\n\n".join(parts), facts, hashtags)
+
+
+def _credit_description(description, facts, hashtags):
+    credit = _text(facts.get("production_credit_line"))
+    copyright_notice = _copyright(facts).get("notice", "")
+    if not credit and not copyright_notice:
+        return description
+    # Rebuild only standalone hashtag tokens, preserving source-URL fragments.
+    body = re.sub(r"(?<!\S)#[\w]+", "", description).strip()
+    for line in (credit, copyright_notice):
+        if line and line not in body:
+            body += "\n\n" + line
+    return body.rstrip() + ("\n\n" + " ".join(hashtags) if hashtags else "")
+
+
+def _copyright(facts):
+    owner = _text(facts.get("rights_owner"))
+    if not owner:
+        if facts.get("copyright_required"):
+            raise ValueError("Copyright credit requires a configured rights owner")
+        return {}
+    year = facts.get("first_publication_year")
+    if isinstance(year, bool) or not isinstance(year, int) or not 1900 <= year <= 9999:
+        raise ValueError("Copyright credit requires the first-publication year")
+    scope = "Original production elements, to the extent protected. Underlying folklore and third-party materials retain their respective rights."
+    return {
+        "rights_owner": owner,
+        "first_publication_year": year,
+        "notice": f"© {year} {owner}. {scope}",
+        "basis": "Owner-declared; asset licences and ownership evidence remain independently required.",
+    }
+
+
+def _category(facts, platform):
+    defaults = facts.get("packaging_defaults") or {}
+    categories = defaults.get("platform_categories") or {}
+    raw = categories.get(platform) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Platform category defaults require structured labels")
+    return {
+        "primary": _text(raw.get("primary")) or None,
+        "secondary": _text(raw.get("secondary")) or None,
+        "fallback": _text(raw.get("fallback")) or None,
+        "status": "suggested_verify_in_current_platform",
+        "note": "Choose only labels offered by the current platform; omit unavailable optional categories. Categories do not establish monetization eligibility.",
+    }
+
+
+def _producer_keywords(facts):
+    result = []
+    for value in _items(facts.get("producer_keywords")):
+        if (
+            len(value) > 80
+            or not re.fullmatch(r"[\w .&'()-]+", value)
+            or _UNSUPPORTED_PROMISES.search(value)
+            or any(w in _TREND_WORDS for w in _normalize_words(value))
+        ):
+            raise ValueError(
+                "Producer search keywords must be explicit company/brand names"
+            )
+        if value not in result:
+            result.append(value)
+    return result
 
 
 def _title(facts: dict[str, Any], platform: str) -> str:
@@ -536,6 +618,7 @@ def package_story(
         raise ValueError("story_id, title, and script_text are required")
 
     script_sha256 = hashlib.sha256(raw_script.encode("utf-8")).hexdigest()
+    copyright_record = _copyright(story_facts)
     asset_verification_cache: dict[tuple[str, str, int, int, int], bool] = {}
     master = _asset_status(story_facts.get("master"), asset_verification_cache)
     captions = _asset_status(story_facts.get("captions"), asset_verification_cache)
@@ -673,7 +756,9 @@ def package_story(
         )
 
     tags = _hashtags(story_facts)
-    keywords = _normal_topics(story_facts)
+    keywords = list(
+        dict.fromkeys([*_normal_topics(story_facts), *_producer_keywords(story_facts)])
+    )
     prepared_metadata = not story_facts.get("cinema_metadata_required") or bool(
         tags
         and keywords
@@ -743,6 +828,8 @@ def package_story(
             "description": description,
             "hashtags": tags,
             "keywords": keywords,
+            "copyright": copyright_record,
+            "category": _category(story_facts, platform),
             "chapters": platform_chapters,
             "media_asset": media_asset,
             "caption_asset": caption_asset,
@@ -797,6 +884,23 @@ def package_story(
             "made_for_kids_reviewed": audience_reviewed,
             "realistic_ai_disclosure_reviewed": ai_reviewed,
             "prepared_platform_metadata": prepared_metadata,
+            "production_attribution_present": all(
+                (
+                    not _text(story_facts.get("production_credit_line"))
+                    or _text(story_facts["production_credit_line"])
+                    in item["description"]
+                )
+                and all(
+                    "#" + token.removeprefix("#") in item["hashtags"]
+                    for token in _items(story_facts.get("required_brand_hashtags"))
+                )
+                for item in platforms_out.values()
+            ),
+            "copyright_credit_present": all(
+                not copyright_record
+                or copyright_record["notice"] in item["description"]
+                for item in platforms_out.values()
+            ),
             "platform_assets_and_audiences_reviewed": all(
                 asset["verified"]
                 and asset["variant_reviewed"]

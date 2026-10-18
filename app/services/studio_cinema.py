@@ -89,6 +89,11 @@ def implementation_identity(repo: Path) -> dict:
         "app/services/flow_cost_router.py",
         "app/services/cost_router.py",
         "app/services/cost_router_overrides.py",
+        "app/services/studio_efficiency.py",
+        "app/services/studio_native_finish.py",
+        "app/services/studio_channel_setup.py",
+        "app/config/config.py",
+        "app/utils/utils.py",
     )
     hashes = {
         name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
