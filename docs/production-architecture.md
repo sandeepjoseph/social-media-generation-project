@@ -136,7 +136,7 @@ field requirements; this table is not a substitute JSON schema or approval.
 | `app/services/story_studio.py` | SQLite workflow, profile loading/snapshots, dependency invalidation, evidence/imports, exact approval, analytics and CLI |
 | `app/services/studio_cinema.py` | Performed-film screenplay/board/pilot/per-shot/duration contracts and implementation-content identity |
 | `app/services/studio_native_movie.py`, `studio_native_media.py` | Reviewed selection validation and native-A/V picture/audio assembly |
-| `app/services/studio_native_finish.py` | Source-evidenced local caption/audio repairs reusing a hash-bound native timeline |
+| `app/services/studio_native_finish.py` | Source-evidenced local caption/audio repairs reusing a hash-bound native timeline, exact post-normalization 48 kHz conformance and decoded audio sample checks |
 | `app/services/studio_finishing.py` | Mandatory actual-final-film and every-boundary acceptance evidence |
 | `app/services/studio_captions.py`, `studio_caption_readability.py` | Locale/media/voice/caption registration and readable English timing candidates |
 | `app/services/studio_efficiency.py` | Saved-take idempotency, exact asset reuse, lossless stable-prefix prompts and identical-byte technical-decode cache |
@@ -197,9 +197,9 @@ unviewed render, a failed final review, unverified archived bytes, a metadata dr
 with no saved post, or inaccessible browser/account controls. Do not report these
 as generated, approved, fixed, published or monetized respectively.
 
-The last implementation change before this documentation report was `857eb9b`.
-Its 222 targeted tests, Ruff/diff checks and fresh-channel UI/relocation smoke
-passed locally; that evidence does not approve any particular film. This report
-is a documentation update, not another production run or a claim of new live
-platform configuration. Check current Git/CI state rather than treating dated
-validation notes as permanent proof of future revisions.
+Validation on 2026-10-19 covered 112 targeted tests, including a real 361.125-second
+normalization/PCM/AAC sample-count regression and early source-review validation,
+plus Ruff and diff checks. Prior fresh-channel relocation smoke evidence remains
+historical. These code checks do not approve a movie or prove any live account
+setting; exact-media reviews and publication receipts remain separate. Check
+current Git/CI state rather than treating dated validation as a permanent pass.

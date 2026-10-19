@@ -43,6 +43,30 @@ def finite_number(value: Any) -> bool:
     )
 
 
+def sync_observation_issues(observations: Any, duration: float) -> list[str]:
+    """Reject malformed actual-review timings before an expensive render.
+
+    Legacy string/range timestamps need explicit evidence-preserving curation;
+    an automatic conversion here would conceal provenance or invent precision.
+    """
+    if not isinstance(observations, list) or len(observations) < 3:
+        return ["sync_observations_required"]
+    issues, times = [], []
+    for observation in observations:
+        if (
+            not isinstance(observation, dict)
+            or not finite_number(observation.get("seconds"))
+            or not 0 <= observation["seconds"] <= duration
+            or not str(observation.get("visible_and_audible_event", "")).strip()
+        ):
+            issues.append("invalid_sync_observation")
+        else:
+            times.append(observation["seconds"])
+    if len(set(times)) < 3:
+        issues.append("distinct_sync_observations_required")
+    return sorted(set(issues))
+
+
 def policy_for(profile: dict) -> dict:
     configured = profile.get("cinema_policy") or {}
     if configured.get("enabled") is not True:
@@ -413,21 +437,10 @@ def performance_review_issues(
                 issues.append(f"cinema:{sid}:dialogue_or_lip_sync_unverified")
             if r.get("review_method") != "full_utterance_normal_and_half_speed":
                 issues.append(f"cinema:{sid}:full_utterance_av_review_required")
-            observations = r.get("sync_observations", [])
-            if not isinstance(observations, list) or len(observations) < 3:
-                issues.append(f"cinema:{sid}:sync_observations_required")
-            else:
-                times = []
-                for o in observations:
-                    if (
-                        not isinstance(o, dict)
-                        or not finite_number(o.get("seconds"))
-                        or not 0 <= o["seconds"] <= shot["duration_seconds"]
-                        or not str(o.get("visible_and_audible_event", "")).strip()
-                    ):
-                        issues.append(f"cinema:{sid}:invalid_sync_observation")
-                    else:
-                        times.append(o["seconds"])
-                if len(set(times)) < 3:
-                    issues.append(f"cinema:{sid}:distinct_sync_observations_required")
+            issues.extend(
+                f"cinema:{sid}:{issue}"
+                for issue in sync_observation_issues(
+                    r.get("sync_observations"), shot["duration_seconds"]
+                )
+            )
     return sorted(set(issues))

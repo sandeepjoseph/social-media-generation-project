@@ -46,6 +46,13 @@ def selection(tmp_path):
                 "source_review_sha256": evidence_sha,
                 "curator_component_pass": True,
                 "review_method": "full_utterance_normal_and_half_speed",
+                "sync_observations": [
+                    {
+                        "seconds": t,
+                        "visible_and_audible_event": f"Fixture observed event {t}",
+                    }
+                    for t in (0.5, 2.5, 4.5)
+                ],
                 "source_submitted_prompt_sha256": prompt_sha,
             }
         )
@@ -100,6 +107,40 @@ def test_review_cut_allows_pending_sequence_but_never_skips_component_checks(sel
     assert any(
         "Unreviewed moving component" in x
         for x in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+@pytest.mark.parametrize("bad", ["0.5", "0.5-1.0", True, float("nan"), -1, 7])
+def test_invalid_component_observations_block_before_render(selection, bad):
+    board, plan, _, _ = selection
+    from pathlib import Path
+
+    path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(path.read_text())
+    decisions["shots"][0]["sync_observations"][0]["seconds"] = bad
+    _, digest = document(path, decisions)
+    for entry in plan["shots"]:
+        entry["component_review_sha256"] = digest
+    assert any(
+        "invalid_sync_observation" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_duplicate_component_observation_times_block_before_render(selection):
+    board, plan, _, _ = selection
+    from pathlib import Path
+
+    path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(path.read_text())
+    for observation in decisions["shots"][0]["sync_observations"]:
+        observation["seconds"] = 1
+    _, digest = document(path, decisions)
+    for entry in plan["shots"]:
+        entry["component_review_sha256"] = digest
+    assert any(
+        "distinct_sync_observations_required" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
     )
 
 

@@ -118,7 +118,10 @@ def audio_graph(plan, cleanup):
     )
     graph += "[voice0]asplit=2[voice][side];"
     seconds = offset / 48000
-    graph += f"[1:a]atrim=duration={seconds},asetpts=PTS-STARTPTS[bed];[bed][side]sidechaincompress=threshold=0.04:ratio=8:attack=30:release=350[duck];[voice][duck]amix=inputs=2:normalize=0:duration=first,loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+    # Dynamic loudnorm may negotiate a 192 kHz output. Conform its result to
+    # the original 48 kHz sample clock before encoding; a mux duration alone
+    # does not guarantee that the decoded AAC tail contains the full timeline.
+    graph += f"[1:a]atrim=duration={seconds},asetpts=PTS-STARTPTS[bed];[bed][side]sidechaincompress=threshold=0.04:ratio=8:attack=30:release=350[duck];[voice][duck]amix=inputs=2:normalize=0:duration=first,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,apad=whole_len={offset},atrim=end_sample={offset}[a]"
     return graph
 
 
@@ -271,6 +274,9 @@ def finish_saved_timeline(
         "cleanup": cleanup,
         "technical": technical,
         "final_audio_fully_decoded_samples": samples,
+        "final_audio_expected_samples": round(duration * 48000),
+        "final_audio_sample_rate": 48000,
+        "post_normalization_sample_clock_conformed": True,
         "new_provider_generations": 0,
         "native_voice_replaced": False,
         "retiming": False,

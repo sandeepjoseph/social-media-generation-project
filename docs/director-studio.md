@@ -305,10 +305,37 @@ Audio cleanup requires a reason and unchanged actual review-evidence file hash
 for every altered shot. Sample-based trims/padding retain the original clock;
 action-only slots carry no unintended generated dialogue. Original speech is
 never resynthesized. Music and license evidence are independently hashed.
+After loudness normalization, the mix is explicitly resampled to 48 kHz and
+conformed to the original timeline's exact sample count before AAC encoding.
+The decoded final audio must still fit the existing codec tolerance; a matching
+container duration cannot substitute for this check. This conformance preserves
+the native performance clock and never authorizes shortened dialogue or video
+padding. The receipt records expected and decoded samples and the sample rate.
 This is a local render with zero new provider generations, not a quality pass.
 The entire final video and audio are decoded; final audiovisual/creative review
 and current profile/version gates still determine release. Every output uses a
 new filename, and the Studio archives generated outputs and caption sidecars.
+
+### Submission and review evidence before more spending
+
+Every Flow bundle includes mandatory submission and review-capture acceptance
+instructions. Reserve credits before one Generate click. If its acknowledgement
+is uncertain, keep that attempt reserved and inspect saved provider jobs before
+any retry. A retained composer or a virtualized gallery without the new card is
+not proof that no job was submitted. Preserve failed/alternate takes and reconcile
+the ledger. The existing uncertain-phase hold requires explicit resolution;
+Studio cannot observe clicks made outside its manual handoff.
+
+For browser-assisted reviews, retrieve the complete rendered response (for
+example, a code element's `textContent`) before treating a short accessibility
+snapshot as a truncated model response. Parse the JSON and check exact ordered
+coverage against the storyboard. Never rerun a review merely because the UI
+only exposes part of an otherwise complete response, and never approve missing
+rows. Native component observations must contain at least three distinct finite
+numeric timestamps, within the selected take, and actual visible/audible events.
+Assembly now checks this before rendering as well as at final QA. Legacy numeric
+strings/ranges require explicit curation retaining the original evidence and
+timing representation; the gate does not silently invent precision or viewing.
 
 ### Continuous native speaking takes
 

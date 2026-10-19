@@ -36,6 +36,13 @@ profile is a minimal fallback; restore a reviewed private profile to reuse your
 commercial direction, brand and applied learning. The actual private-channel
 inventory and operating locations belong in that private repository's README.
 
+Native finishing preserves the exact 48 kHz timeline after loudness normalization
+and checks decoded audio samples. Source-review timestamps are validated before
+rendering as well as at final acceptance. Every Flow handoff also carries the
+mandatory one-click/reserved-attempt and complete-review-response contracts;
+external browser actions still require operator reconciliation and verified
+publication receipts. See the [operator guide](docs/director-studio.md).
+
 ## Products used and their responsibilities
 
 The following components have distinct responsibilities. External assistant/browser

@@ -264,6 +264,14 @@ def validate_plan(board, plan, *, require_sequence_review=True, check_readabilit
                 != "full_utterance_normal_and_half_speed"
             ):
                 issues.append("Source-bound native performance approval required")
+            from app.services.studio_cinema import sync_observation_issues
+
+            issues.extend(
+                f"Native source review {entry['shot_id']}: {issue}"
+                for issue in sync_observation_issues(
+                    decision.get("sync_observations"), duration
+                )
+            )
             if not recipe or decision.get(
                 "source_submitted_prompt_sha256"
             ) != recipe.get("prompt_sha256"):

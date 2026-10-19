@@ -2787,6 +2787,23 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         "approved_reference_assets": list(archived_assets.values()),
         "shots": bundle_shots,
         "provider_account_check_required": "hold_without_retry_or_account_switch",
+        "submission_acceptance": {
+            "required": True,
+            "reserve_credit_before_generate": True,
+            "one_click_per_reserved_attempt": True,
+            "uncertain_acknowledgement": "hold_reserved_attempt_without_retry",
+            "retained_prompt_proves_failure": False,
+            "virtualized_gallery_absence_proves_failure": False,
+            "retry_requires": "Inspect the provider's saved jobs and reconcile the reserved attempt. A missing click acknowledgement, retained composer or current gallery viewport cannot establish non-submission.",
+            "runtime_boundary": "External manual/browser handoff; Studio cannot observe unrecorded provider clicks or guarantee a provider billing cap.",
+        },
+        "review_capture_acceptance": {
+            "required": True,
+            "complete_json_parse_required": True,
+            "exact_ordered_shot_coverage_required": True,
+            "partial_visible_response_is_final": False,
+            "retry_requires": "Read the complete rendered response before deciding it is truncated. Preserve the raw response and verify every required row. UI virtualization alone is not a model failure or reason to rerun a paid review.",
+        },
         "efficiency": {
             "saved_matching_takes": sum(
                 s["reuse"]["status"] == "saved_take_available_review_still_required"

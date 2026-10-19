@@ -103,3 +103,61 @@ def test_invalid_cleanup_never_erases_or_retimes_a_line(tmp_path, start, end):
         finish.audio_graph(
             plan, {"a": {"start_seconds": start, "end_seconds": end, "reason": "test"}}
         )
+
+
+def test_normalized_fractional_movie_retains_native_sample_clock(tmp_path):
+    """Exercise the real normalizer/resampler, including the final audible tail.
+
+    A 361.125-second release exposed a 2,800-sample AAC shortfall despite a
+    correct container duration. Check actual PCM and decoded AAC, not metadata.
+    """
+    import av
+    import numpy as np
+
+    from app.services.studio_native_media import run_ffmpeg
+
+    duration = 361.125
+    expected = round(duration * 48000)
+    plan = {
+        "shots": [
+            {
+                "shot_id": "native",
+                "duration_seconds": duration,
+                "dialogue": "Fixture audio, no synthetic actor approval.",
+            }
+        ]
+    }
+    pcm = tmp_path / "mixed.wav"
+    encoded = tmp_path / "mixed.m4a"
+    run_ffmpeg(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:sample_rate=48000:duration={duration}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=220:sample_rate=48000:duration={duration}",
+            "-filter_complex_threads",
+            "1",
+            "-filter_complex",
+            finish.audio_graph(plan, {}),
+            "-map",
+            "[a]",
+            "-c:a",
+            "pcm_s24le",
+            pcm,
+        ]
+    )
+    with av.open(str(pcm)) as container:
+        frames = list(container.decode(audio=0))
+    assert sum(frame.samples for frame in frames) == expected
+    assert all(frame.sample_rate == 48000 for frame in frames)
+    # The end remains audible, rather than satisfying the count with a long
+    # silent tail or silently dropping the original performance ending.
+    assert np.max(np.abs(frames[-1].to_ndarray().astype(float))) > 0
+    run_ffmpeg(["-i", pcm, "-c:a", "aac", "-b:a", "192k", "-t", str(duration), encoded])
+    with av.open(str(encoded)) as container:
+        decoded_samples = sum(frame.samples for frame in container.decode(audio=0))
+    assert abs(decoded_samples - expected) <= 2048

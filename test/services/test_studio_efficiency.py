@@ -181,3 +181,15 @@ def test_flow_export_defaults_to_reuse_saved_take_instead_of_spending_again(
     assert repeated["shots"][0]["max_outputs_per_request"] == 1
     assert repeated["efficiency"]["saved_matching_takes"] == 1
     assert repeated["efficiency"]["quality_gates_unchanged"] is True
+    submission = repeated["submission_acceptance"]
+    assert submission["required"] is True
+    assert submission["one_click_per_reserved_attempt"] is True
+    assert (
+        submission["uncertain_acknowledgement"] == "hold_reserved_attempt_without_retry"
+    )
+    assert submission["retained_prompt_proves_failure"] is False
+    assert submission["virtualized_gallery_absence_proves_failure"] is False
+    capture = repeated["review_capture_acceptance"]
+    assert capture["required"] and capture["complete_json_parse_required"]
+    assert capture["exact_ordered_shot_coverage_required"]
+    assert capture["partial_visible_response_is_final"] is False
