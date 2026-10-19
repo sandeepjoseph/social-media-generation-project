@@ -28,6 +28,7 @@ from app.services.cost_router import (
     route_task,
 )
 from app.utils import utils
+from app.utils.request_logging import trace_sdk_call
 
 _max_retries = 5
 _provider_execution_guard = ExecutionGuard(max_attempts=5, max_concurrency=3)
@@ -431,7 +432,8 @@ def _generate_response_provider(
             import dashscope
             from dashscope.api_entities.dashscope_response import GenerationResponse
 
-            response = dashscope.Generation.call(
+            response = trace_sdk_call(
+                llm_provider, base_url, dashscope.Generation.call,
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 api_key=api_key,
@@ -489,7 +491,8 @@ def _generate_response_provider(
                     api_key=api_key,
                     http_options=http_options,
                 ) as client:
-                    response = client.models.generate_content(
+                    response = trace_sdk_call(
+                        llm_provider, base_url, client.models.generate_content,
                         model=model_name,
                         contents=prompt,
                         config=generation_config,
@@ -515,7 +518,8 @@ def _generate_response_provider(
                 default_headers={"cf-aig-gateway-id": gateway_id},
                 **_sdk_transport_options(request_timeout, max_retries),
             )
-            response = client.chat.completions.create(
+            response = trace_sdk_call(
+                llm_provider, base_url, client.chat.completions.create,
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -529,7 +533,8 @@ def _generate_response_provider(
                     f"{llm_provider}: model_name is not set, please set it in the config.toml file."
                 )
 
-            response = litellm.completion(
+            response = trace_sdk_call(
+                llm_provider, base_url, litellm.completion,
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 drop_params=True,
@@ -554,7 +559,8 @@ def _generate_response_provider(
                 azure_endpoint=base_url,
                 **_sdk_transport_options(request_timeout, max_retries),
             )
-            response = client.chat.completions.create(
+            response = trace_sdk_call(
+                llm_provider, base_url, client.chat.completions.create,
                 model=model_name, messages=[{"role": "user", "content": prompt}]
             )
             if response:
@@ -740,7 +746,8 @@ def _generate_response_provider(
                 default_headers=kimi_code_oauth.api_headers(),
                 **_sdk_transport_options(None, max_retries),
             )
-            response = client.chat.completions.create(
+            response = trace_sdk_call(
+                llm_provider, base_url, client.chat.completions.create,
                 model=request_model, messages=[{"role": "user", "content": prompt}]
             )
             if response and isinstance(response, ChatCompletion):
@@ -756,7 +763,8 @@ def _generate_response_provider(
                 base_url=base_url,
                 **_sdk_transport_options(request_timeout, max_retries),
             )
-            response = sdk_stream = client.chat.completions.create(
+            response = sdk_stream = trace_sdk_call(
+                llm_provider, base_url, client.chat.completions.create,
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 extra_body={"enable_thinking": False},
@@ -789,7 +797,8 @@ def _generate_response_provider(
             **_sdk_transport_options(request_timeout, max_retries),
         )
 
-        response = client.chat.completions.create(
+        response = trace_sdk_call(
+            llm_provider, base_url, client.chat.completions.create,
             model=model_name, messages=[{"role": "user", "content": prompt}]
         )
         if response:

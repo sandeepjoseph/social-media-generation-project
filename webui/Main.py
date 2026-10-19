@@ -65,8 +65,13 @@ from app.services import sonilo as sonilo_service
 from app.services import state as sm
 from app.services import task as tm
 from app.services import version_checker
-from app.utils.logging_utils import configure_terminal_logger
+from app.utils.logging_utils import (
+    LOG_LEVELS,
+    configure_terminal_logger,
+    get_logging_options,
+)
 from app.utils import utils
+from app.utils.request_logging import trace_http_call
 
 st.set_page_config(
     page_title="MoneyPrinterTurbo",
@@ -91,8 +96,8 @@ style_file = Path(__file__).with_name("styles.css")
 streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
 st.markdown(streamlit_style, unsafe_allow_html=True)
 # 定义资源目录
-font_dir = os.path.join(root_dir, "resource", "fonts")
-song_dir = os.path.join(root_dir, "resource", "songs")
+font_dir = utils.font_dir()
+song_dir = utils.song_dir()
 i18n_dir = os.path.join(root_dir, "webui", "i18n")
 config_file = os.path.join(root_dir, "webui", ".streamlit", "webui.toml")
 # 语言列表必须在会话状态初始化前可用，首次访问时才能把浏览器 locale 映射到
@@ -1894,7 +1899,7 @@ def open_task_folder(task_id):
         # 通过路径拼接访问任务目录之外的位置，也避免后续打开目录时触发
         # 平台 shell 对特殊字符的解释。
         normalized_task_id = str(UUID(str(task_id)))
-        tasks_root = os.path.abspath(os.path.join(root_dir, "storage", "tasks"))
+        tasks_root = os.path.abspath(utils.task_dir())
         path = os.path.abspath(os.path.join(tasks_root, normalized_task_id))
 
         # 即使 UUID 校验通过，也再次确认最终路径仍在任务根目录内，避免
@@ -1914,7 +1919,7 @@ def init_log():
     # 基础日志 Handler 属于进程级资源，而不是页面会话状态。Streamlit 每次组件
     # 交互都会 rerun 页面脚本，代码热重载也可能让缓存失效。日志初始化只能
     # 精确替换终端 Handler，不能清空正在生成任务使用的 WebUI 临时 Handler。
-    _lvl = "DEBUG"
+    _lvl = get_logging_options()[0]
 
     return configure_terminal_logger(
         sys.stdout,
@@ -2646,7 +2651,8 @@ def get_groq_model_ids(api_key: str, base_url: str) -> list[str]:
     models_url = f"{normalized_base_url}/models"
 
     try:
-        response = requests.get(
+        response = trace_http_call(
+            "GET", requests.get,
             models_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
@@ -3177,6 +3183,28 @@ def _render_key_backup_settings(panel):
 # -----------------------------------------------------------------------------
 
 
+def _render_logging_settings():
+    level, log_requests = get_logging_options()
+    with st.expander(tr("Diagnostic Logging")):
+        st.caption(tr("Diagnostic Logging Help"))
+        with st.form("diagnostic_logging_form"):
+            selected_level = st.selectbox(
+                tr("Log Level"), LOG_LEVELS, index=LOG_LEVELS.index(level),
+                key="diagnostic_log_level",
+            )
+            selected_trace = st.checkbox(
+                tr("Trace API Requests"), value=log_requests,
+                key="diagnostic_log_requests",
+                help=tr("Trace API Requests Help"),
+            )
+            apply = st.form_submit_button(tr("Apply Logging Settings"))
+        if apply:
+            # 诊断不改变生成参数，直接生效；持久化仍走非阻塞配置队列。
+            config.update_logging_options(selected_level, selected_trace)
+            _save_runtime_config()
+            st.success(tr("Logging Settings Applied"))
+
+
 # 设置属于低频操作，使用中等尺寸 Dialog 避免长期占用主页面纵向空间，
 # 同时控制阅读行宽，避免弹窗在宽屏设备上显得过于松散。
 # Dialog 继承 fragment 行为，内部控件交互只重绘弹窗；函数末尾单独保存配置，
@@ -3325,6 +3353,7 @@ def _render_settings_dialog():
                 key="hide_log_checkbox",
             )
             _set_runtime_config("ui", "hide_log", hide_log)
+            _render_logging_settings()
 
         _render_cache_management_settings(cache_config_panel)
         # 密钥恢复会写回配置并清除密码控件状态，必须在下面渲染这些控件之前执行。

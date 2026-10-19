@@ -229,6 +229,7 @@
     "LLM Provider": "LLM Provider",
     "Recommended": "Recommended",
     "llm_provider_label.moonshot": "Kimi / Moonshot AI (Recommended)",
+    "llm_provider_label.muse_spark": "Muse Spark",
     "llm_provider_label.shengsuanyun": "Shengsuan Cloud",
     "llm_provider_label.apimart": "APIMart",
     "llm_provider_label.openrouter": "OpenRouter",
@@ -509,6 +510,7 @@
     "llm_provider_tips.qwen": "##### Qwen Configuration\n- **API Key**: create one on [DashScope]({api_key_url})\n- **Base Url**: not required\n- **Model Name**: defaults to `{default_model}`; see the [model list](https://help.aliyun.com/zh/dashscope/developer-reference/model-introduction#3ef6d0bcf91wy)",
     "llm_provider_tips.azure": "##### Azure OpenAI Configuration\n- **API Key**: obtain one from the [Azure Portal]({api_key_url})\n- **Base Url**: required; enter the Azure OpenAI endpoint, such as `https://<resource>.openai.azure.com`\n- **Model Name**: enter the Deployment Name; see the [deployment guide](https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource)",
     "llm_provider_tips.gemini": "##### Gemini Configuration\n- **API Key**: create one on [Google AI Studio]({api_key_url})\n- **Base Url**: not required\n- **Model Name**: defaults to `{default_model}`",
+    "llm_provider_tips.muse_spark": "##### Muse Spark Configuration\n- **API Key**: create one in the [Meta developer dashboard]({api_key_url})\n- **Base Url**: defaults to `{default_base_url}`\n- **Model Name**: defaults to `{default_model}`; see the [model list]({model_docs_url})",
     "llm_provider_tips.grok": "##### Grok Configuration\n- **API Key**: create one in the [xAI Console]({api_key_url})\n- **Base Url**: defaults to `{default_base_url}`\n- **Model Name**: defaults to `{default_model}`; you can also enter another model ID available to your account",
     "llm_provider_tips.groq": "##### Groq Configuration\n- **API Key**: create one in the [Groq Console]({api_key_url})\n- **Base Url**: defaults to `{default_base_url}`\n- **Model Name**: defaults to `{default_model}`; available models can also be loaded from the API",
     "llm_provider_tips.deepseek": "##### DeepSeek Configuration\n- **API Key**: create one on the [DeepSeek Platform]({api_key_url})\n- **Base Url**: defaults to `{default_base_url}`\n- **Model Name**: defaults to `{default_model}`; you can also enter another model ID available to your account",
@@ -601,6 +603,13 @@
     "kimi_code.oauth.region_mismatch": "Signed in for region \"{authorized}\", but the selected API Platform is \"{selected}\". Requests will use \"{authorized}\" to match your credential; sign in again to switch regions.",
     "kimi_code.oauth.network_error": "Could not reach the Kimi authorization service (network error). Check your connection, then start sign-in again.",
     "kimi_code.oauth.changed": "Sign-in state changed in another page. This authorization has stopped; sign in again if needed.",
-    "kimi_code.oauth.poll_retry": "Network error while checking the authorization status; retrying automatically…"
+    "kimi_code.oauth.poll_retry": "Network error while checking the authorization status; retrying automatically…",
+    "Diagnostic Logging": "Diagnostic logging",
+    "Diagnostic Logging Help": "Changes apply immediately to this service and all its browser sessions.",
+    "Log Level": "Log level",
+    "Trace API Requests": "Trace API request parameters",
+    "Trace API Requests Help": "Independent of log level and off by default. Records redacted parameters, status and timing. Prompts may be visible. Media and response bodies are omitted. Turn off after troubleshooting.",
+    "Apply Logging Settings": "Apply logging settings",
+    "Logging Settings Applied": "Logging settings applied to this service."
   }
 }
