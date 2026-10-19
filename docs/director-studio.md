@@ -309,3 +309,14 @@ This is a local render with zero new provider generations, not a quality pass.
 The entire final video and audio are decoded; final audiovisual/creative review
 and current profile/version gates still determine release. Every output uses a
 new filename, and the Studio archives generated outputs and caption sidecars.
+
+### Continuous native speaking takes
+
+A native-dialogue single must use one continuous interval from one original A/V
+source, with the selected duration matching that source's native frame clock.
+Do not splice a restarted word or cover a broken utterance with a silent actor
+and call it an accepted single. Preserve the failed source, record the defect and
+request a new fluent native take within the current authorized credit budget.
+Action/reaction shots can remain separately planned non-speaking slots; they
+cannot conceal a failed speaking performance. Normal/half-speed, boundary and
+whole-film reviews are still required for the replacement.

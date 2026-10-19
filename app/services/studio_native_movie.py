@@ -204,6 +204,28 @@ def validate_plan(board, plan, *, require_sequence_review=True, check_readabilit
             issues.append(
                 "Original frame-interval provenance required: " + entry["shot_id"]
             )
+        if slot["speech_mode"] == "native_dialogue":
+            if len(intervals) != 1:
+                issues.append(
+                    "Native speaking single requires one continuous original A/V source; reshoot repeated dialogue instead of covering it with a silent actor: "
+                    + entry["shot_id"]
+                )
+            else:
+                first, last = (
+                    intervals[0].get("start_frame"),
+                    intervals[0].get("end_frame"),
+                )
+                if (
+                    isinstance(first, bool)
+                    or isinstance(last, bool)
+                    or not isinstance(first, int)
+                    or not isinstance(last, int)
+                    or last - first != round(frames)
+                ):
+                    issues.append(
+                        "Native speaking single must retain its original frame clock: "
+                        + entry["shot_id"]
+                    )
         for interval in intervals:
             key = interval.get("source_sha256")
             original = Path(interval.get("source_path", ""))

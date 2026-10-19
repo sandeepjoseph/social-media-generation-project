@@ -155,6 +155,42 @@ def test_a_new_slot_cannot_repeat_the_same_original_frames(selection):
     )
 
 
+def test_silent_reaction_cannot_cover_a_broken_native_speaking_take(selection):
+    board, plan, _, _ = selection
+    entry = plan["shots"][0]
+    original = copy.deepcopy(entry["source_intervals"][0])
+    reaction = copy.deepcopy(plan["shots"][1]["source_intervals"][0])
+    original["end_frame"] = 120
+    reaction.update(start_frame=0, end_frame=24)
+    entry["source_intervals"] = [original, reaction]
+    assert any(
+        "one continuous original A/V source" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_splicing_restarted_words_from_one_take_still_requires_reshoot(selection):
+    board, plan, _, _ = selection
+    original = plan["shots"][0]["source_intervals"][0]
+    plan["shots"][0]["source_intervals"] = [
+        {**original, "end_frame": 60},
+        {**original, "start_frame": 72},
+    ]
+    assert any(
+        "one continuous original A/V source" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_native_source_interval_cannot_hide_picture_clock_mismatch(selection):
+    board, plan, _, _ = selection
+    plan["shots"][0]["source_intervals"][0]["end_frame"] = 145
+    assert any(
+        "original frame clock" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
 def test_sequence_pass_binds_exact_ordered_media_and_reviewed_movie(selection):
     board, plan, folder, _ = selection
     reviewed = folder / "actual-review-cut.mp4"
