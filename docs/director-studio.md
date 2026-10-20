@@ -198,7 +198,7 @@ whole-movie review. Other languages require fluent-reviewed line breaks and timi
 
 Once a profile enables cinema, the finishing contract is mandatory. A channel
 can additionally set `mandatory_cinema: true`; its profile then fails to load if
-cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.0.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
+cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.1.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
 identity includes caption, finishing and growth implementations, so changes
 hold frozen cinema jobs for explicit replan and revoke downstream approvals
 through the existing refresh operation. Historical uploads are never repaired
