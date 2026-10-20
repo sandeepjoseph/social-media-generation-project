@@ -198,7 +198,7 @@ whole-movie review. Other languages require fluent-reviewed line breaks and timi
 
 Once a profile enables cinema, the finishing contract is mandatory. A channel
 can additionally set `mandatory_cinema: true`; its profile then fails to load if
-cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.1.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
+cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.2.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
 identity includes caption, finishing and growth implementations, so changes
 hold frozen cinema jobs for explicit replan and revoke downstream approvals
 through the existing refresh operation. Historical uploads are never repaired
@@ -374,3 +374,22 @@ request a new fluent native take within the current authorized credit budget.
 Action/reaction shots can remain separately planned non-speaking slots; they
 cannot conceal a failed speaking performance. Normal/half-speed, boundary and
 whole-film reviews are still required for the replacement.
+
+### Review transcript reconciliation
+
+Contract 3.2 requires the hash-bound source review to identify exactly one
+matching shot and report its complete `heard_words`. Missing or conflicting
+transcripts hold native assembly even if the curated decision says passed.
+Normalization handles case, punctuation, common unambiguous English contractions
+and small-number spelling; it preserves repeated words, added clauses and
+negation. Unicode vowel/combining marks remain intact for localized episodes.
+Compare independent wording evidence against that same selected source as well.
+Matching text never establishes lip sync, natural acting or creative approval.
+
+A tail-only editorial experiment may select one contiguous original interval
+after a complete correct utterance and natural listening rest, before a later
+unwanted restart. It requires an explicit duration replan, exact original frame
+range, fresh normal/half-speed A/V acceptance and a whole-film boundary check.
+It cannot salvage an internal repetition, clipped word or missing dialogue.
+Preserve the full original and every candidate; a pending experiment cannot
+become an accepted component or publication permission.

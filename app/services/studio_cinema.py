@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "3.1.0"
+CONTRACT_VERSION = "3.2.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",

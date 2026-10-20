@@ -145,6 +145,7 @@ def validate_plan(board, plan, *, require_sequence_review=True, check_readabilit
     total = 0
     origins = []
     for entry in plan.get("shots", []):
+        source_review_document = {}
         slot = next(
             (s for s in board["shots"] if s["shot_id"] == entry["shot_id"]), None
         )
@@ -199,6 +200,11 @@ def validate_plan(board, plan, *, require_sequence_review=True, check_readabilit
                 issues.append(
                     "Original audiovisual/context review evidence is missing or changed"
                 )
+            else:
+                try:
+                    source_review_document = json.loads(source_review.read_text())
+                except (ValueError, UnicodeError):
+                    issues.append("Original audiovisual review is not valid JSON")
         intervals = entry.get("source_intervals", [])
         if not intervals:
             issues.append(
@@ -250,6 +256,17 @@ def validate_plan(board, plan, *, require_sequence_review=True, check_readabilit
                 )
             origins.append((key, start, end))
         if slot["speech_mode"] == "native_dialogue":
+            from app.services.studio_review_words import review_word_issues
+
+            issues.extend(
+                f"Native source review {entry['shot_id']}: {issue}"
+                for issue in review_word_issues(
+                    slot["dialogue"]["text"],
+                    source_review_document,
+                    entry["shot_id"],
+                    locale=locale,
+                )
+            )
             recipe = next(
                 (
                     s

@@ -21,7 +21,14 @@ def selection(tmp_path):
     plan = {"locale": "en", "shots": []}
     recipes, decisions = [], []
     evidence, evidence_sha = document(
-        tmp_path / "review.json", {"method": "test fixture"}
+        tmp_path / "review.json",
+        {
+            "method": "test fixture",
+            "shots": [
+                {"shot_id": f"shot-{i}", "heard_words": "Shall we try this together?"}
+                for i in range(60)
+            ],
+        },
     )
     for i in range(60):
         sid = f"shot-{i}"
@@ -182,6 +189,29 @@ def test_tampered_source_or_review_is_held(selection):
     assert any(
         "changed component decision" in x
         for x in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_false_positive_curator_cannot_approve_another_shots_words(selection):
+    from pathlib import Path
+
+    board, plan, _, _ = selection
+    decision_path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(decision_path.read_text())
+    evidence_path = Path(decisions["shots"][0]["source_review"])
+    evidence = json.loads(evidence_path.read_text())
+    evidence["shots"][0][
+        "heard_words"
+    ] = "A different character speaks a different sentence."
+    _, evidence_sha = document(evidence_path, evidence)
+    for row in decisions["shots"]:
+        row["source_review_sha256"] = evidence_sha
+    _, decision_sha = document(decision_path, decisions)
+    for row in plan["shots"]:
+        row["component_review_sha256"] = decision_sha
+    assert any(
+        "words contradict" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
     )
 
 
