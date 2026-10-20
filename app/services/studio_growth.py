@@ -115,7 +115,7 @@ _PLATFORM_STRATEGY = {
     "instagram_reels": "Review the current composer limits and confirm music is licensed for this account and use.",
     "tiktok": "Complete the draft in TikTok and apply any required AI or commercial-content disclosures there.",
     "dailymotion": "Confirm category, visibility, and the explicit child-directed setting in the upload flow.",
-    "rumble": "Use a human upload handoff and verify caption/subtitle support and metadata in the current interface.",
+    "rumble": "Prefer an owner-operated Rumble Studio upload at https://studio.rumble.com/home/upload?ref=rumble. Keep an in-progress legacy upload in place; verify account access, categories, captions, visibility and licensing in the current interface. This remains a manual handoff, not an upload API.",
 }
 
 

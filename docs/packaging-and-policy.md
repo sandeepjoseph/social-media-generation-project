@@ -34,3 +34,7 @@ This service encodes only a subset of limits backed by official API references. 
 ## Analytics CSV
 
 Write a header using `ANALYTICS_CSV_COLUMNS`. Keep missing metrics empty. A row should describe an observed post/variant and include the source and notes needed to reproduce the measurement; do not fill unobserved numbers with zero or infer a performance result from a platform recommendation.
+
+### Preferred Rumble upload experience
+
+For new owner-operated uploads, prefer [Rumble Studio](https://studio.rumble.com/home/upload?ref=rumble). This is a navigation preference, not a publishing API or a verified speed claim. Keep an in-progress legacy upload in place until it completes. If Studio is unavailable to the account, use the legacy upload page manually. Carry the same exact reviewed video, cover, locale-matched captions, title/description/tags and rights/audience/disclosure review into either interface. Verify the saved watch link and visibility separately; a monetized embed snippet does not establish payout eligibility.
