@@ -694,9 +694,9 @@ class StudioStore:
         result["phases"] = {
             phase["phase"]: {
                 **dict(phase),
-                "output": json.loads(phase["output_json"])
-                if phase["output_json"]
-                else None,
+                "output": (
+                    json.loads(phase["output_json"]) if phase["output_json"] else None
+                ),
             }
             for phase in phases
         }
@@ -1033,9 +1033,7 @@ class StudioStore:
             archive_kind = (
                 "imported_caption"
                 if kind == "caption_track"
-                else "imported_media"
-                if kind in {"master", "localized_media"}
-                else kind
+                else "imported_media" if kind in {"master", "localized_media"} else kind
             )
             archive = _archive_media_path(
                 self,
@@ -1169,6 +1167,39 @@ class StudioStore:
             raise ValueError(
                 "accept the two-character dialogue pilot before bulk production receipts"
             )
+        if policy:
+            # Reuse a previously imported source without inventing a historical
+            # pre-submit observation. New sources require a complete readback.
+            # A local derivative can inherit a known original's submission, but
+            # never its creative approval; native finishing/A/V gates still run.
+            original_hash = receipt.get("native_original_source_sha256")
+            with self.connect() as conn:
+                cached = conn.execute(
+                    "SELECT asset_path,asset_sha256 FROM flow_receipts WHERE story_id=? AND shot_id=? AND prompt_sha256=? AND asset_sha256 IN (?,?) ORDER BY imported_at DESC LIMIT 1",
+                    (
+                        story_id,
+                        shot_id,
+                        prompt_hash,
+                        actual_hash,
+                        str(original_hash or ""),
+                    ),
+                ).fetchone()
+            known_source = bool(
+                cached
+                and Path(cached["asset_path"]).is_file()
+                and digest_file(Path(cached["asset_path"])) == cached["asset_sha256"]
+            )
+            if not known_source:
+                from app.services.studio_provider_preflight import attestation_issues
+
+                issues = attestation_issues(
+                    receipt.get("submission_attestation"),
+                    shot,
+                    story_id=story_id,
+                    storyboard_sha256=current_board["sha256"],
+                )
+                if issues:
+                    raise ValueError("; ".join(issues))
         expected = {
             item["shot_id"]: item["prompt_sha256"] for item in manifest.get("shots", [])
         }
@@ -2272,9 +2303,9 @@ def request_screenplay_draft(
                 "action": "observable character decisions and physical performance",
             }
         )
-        prompt["output_contract"]["scenes"][0]["lines"][0]["line_id"] = (
-            "unique stable line id"
-        )
+        prompt["output_contract"]["scenes"][0]["lines"][0][
+            "line_id"
+        ] = "unique stable line id"
         prompt["constraints"].extend(
             [
                 "Write a film performed by characters. The narrator must not deliver character dialogue or explain every visible action.",
@@ -2789,6 +2820,11 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         "provider_account_check_required": "hold_without_retry_or_account_switch",
         "submission_acceptance": {
             "required": True,
+            "exact_composer_text_readback_required": True,
+            "actor_reference_and_saved_voice_binding_required": True,
+            "native_audio_and_one_output_quote_required": True,
+            "new_receipt_requires_submission_attestation": bool(policy),
+            "cached_sources_reused_without_fabricated_historical_preflight": True,
             "reserve_credit_before_generate": True,
             "one_click_per_reserved_attempt": True,
             "uncertain_acknowledgement": "hold_reserved_attempt_without_retry",
@@ -3464,9 +3500,11 @@ def _cli() -> int:
             args.source_file,
             source=args.source,
             metrics=json.loads(Path(args.metrics_json).read_text(encoding="utf-8")),
-            cost=json.loads(Path(args.cost_json).read_text(encoding="utf-8"))
-            if args.cost_json
-            else None,
+            cost=(
+                json.loads(Path(args.cost_json).read_text(encoding="utf-8"))
+                if args.cost_json
+                else None
+            ),
         )
     elif args.command == "experiment-plan":
         result = six_episode_experiment_plan(

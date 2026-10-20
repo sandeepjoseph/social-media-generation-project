@@ -295,7 +295,7 @@ def test_source_plan_stays_independent_of_other_story(selection):
 def test_full_cinema_release_rechecks_finishing_evidence_at_owner_approval(
     configured, tmp_path, monkeypatch
 ):
-    from test.services.test_studio_cinema import film, review_for
+    from test.services.test_studio_cinema import film, review_for, submission_fixture
     from test.services.test_story_studio import _register_variant
 
     store, _ = configured
@@ -338,12 +338,14 @@ def test_full_cinema_release_rechecks_finishing_evidence_at_owner_approval(
                 "prompt_sha256": shot["prompt_sha256"],
                 "asset_path": str(clip),
                 "provider": "test",
+                "submission_attestation": submission_fixture(shot, store, sid),
             },
         )
         if index == 1:
             pilot = review_for(board, store.flow_receipts(sid), board_sha, pilot=True)
             pilot["story_id"] = sid
             studio.import_performance_pilot_review(store, sid, pilot)
+            studio.export_flow_bundle(store, sid)
     master = tmp_path / "candidate.mp4"
     master.write_bytes(b"Final movie hash fixture; technical decoder mocked explicitly")
     captions = tmp_path / "captions.srt"

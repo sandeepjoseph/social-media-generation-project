@@ -6,6 +6,29 @@ import pytest
 
 from app.services import story_studio as studio
 from app.services import studio_cinema as cinema
+from app.services.studio_provider_preflight import attest_submission
+
+
+def submission_fixture(shot, store, story_id):
+    """Synthetic operator data for contract tests, never real UI/creative QA."""
+    return attest_submission(
+        {**shot, "generation_allowed": True},
+        {
+            "shot_id": shot["shot_id"],
+            "prompt_text": shot["prompt"],
+            "reference_sha256": [a["sha256"] for a in shot.get("reference_assets", [])],
+            "visible_speaker_id": shot.get("visible_speaker_id"),
+            "voice_id": (shot.get("dialogue") or {}).get("voice_id"),
+            "native_audio": True,
+            "output_count": 1,
+            "duration_seconds": shot["duration_seconds"],
+            "model": "fixture only",
+            "quoted_credits": 12,
+            "observed_by": "synthetic contract fixture",
+        },
+        story_id=story_id,
+        storyboard_sha256=store.latest_artifact(story_id, "storyboard")["sha256"],
+    )
 
 
 def film():
@@ -218,6 +241,7 @@ def test_native_export_preserves_provider_take_length_and_exact_prompt(
         "prompt_sha256": exported["prompt_sha256"],
         "asset_path": str(media),
         "provider": "test",
+        "submission_attestation": submission_fixture(exported, store, sid),
     }
     monkeypatch.setattr(studio, "video_duration_seconds", lambda p: 8.0)
     with pytest.raises(ValueError, match="duration must match"):
@@ -234,6 +258,32 @@ def test_reuse_only_export_never_authorizes_a_duplicate_cloud_request(configured
     assert bundle["shots"][0]["generation_allowed"] is False
     assert bundle["shots"][1]["generation_allowed"] is True
     assert bundle["dialogue_pilot"]["accepted"] is False
+
+
+def test_new_native_source_needs_readback_but_cached_source_needs_no_fabrication(
+    configured, tmp_path, monkeypatch
+):
+    store, sid, _, _ = ready_story(configured)
+    shot = studio.export_flow_bundle(store, sid)["shots"][0]
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"Synthetic hash fixture only; no actual video review")
+    monkeypatch.setattr(studio, "video_duration_seconds", lambda path: 8)
+    receipt = {
+        "shot_id": shot["shot_id"],
+        "prompt_sha256": shot["prompt_sha256"],
+        "asset_path": str(source),
+        "provider": "test",
+    }
+    with pytest.raises(ValueError, match="submission_attestation_required"):
+        store.import_flow_receipt(sid, receipt)
+    store.import_flow_receipt(
+        sid, {**receipt, "submission_attestation": submission_fixture(shot, store, sid)}
+    )
+    assert store.import_flow_receipt(sid, receipt)["idempotent"]
+    assert store.latest_artifact(sid, "performance_pilot_review") is None
+    source.write_bytes(b"Changed native source must not inherit the old readback")
+    with pytest.raises(ValueError, match="submission_attestation_required"):
+        store.import_flow_receipt(sid, receipt)
 
 
 @pytest.mark.parametrize("seconds", [56, 170, 256, 359, 481, float("nan"), True, None])
@@ -335,12 +385,13 @@ def test_bulk_receipts_are_held_until_bound_two_speaker_pilot(
     media.write_bytes(b"This is a hash fixture; no media quality claim.")
 
     def receipt(index):
-        shot = bundle["shots"][index]
+        shot = studio.export_flow_bundle(store, sid)["shots"][index]
         return {
             "shot_id": shot["shot_id"],
             "prompt_sha256": shot["prompt_sha256"],
             "asset_path": str(media),
             "provider": "test",
+            "submission_attestation": submission_fixture(shot, store, sid),
         }
 
     with pytest.raises(ValueError, match="pilot before bulk"):

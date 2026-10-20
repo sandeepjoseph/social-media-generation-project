@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "3.0.0"
+CONTRACT_VERSION = "3.1.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",
@@ -91,6 +91,8 @@ def policy_for(profile: dict) -> dict:
         raise ValueError("unsupported cinema performance mode")
     from app.services.studio_finishing import contract
 
+    policy["provider_submission_preflight_required"] = True
+
     # Enabling cinema enables its release contract. An omitted/false private
     # override cannot quietly turn the learned finishing requirements off.
     policy["finishing_contract"] = contract()
@@ -105,6 +107,7 @@ def implementation_identity(repo: Path) -> dict:
         "webui/pages/2_Director_Studio.py",
         "app/services/studio_native_movie.py",
         "app/services/studio_native_media.py",
+        "app/services/studio_provider_preflight.py",
         "app/services/studio_caption_readability.py",
         "app/services/studio_captions.py",
         "app/services/studio_finishing.py",
@@ -122,9 +125,11 @@ def implementation_identity(repo: Path) -> dict:
         "app/utils/utils.py",
     )
     hashes = {
-        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
-        if (repo / name).is_file()
-        else "missing"
+        name: (
+            hashlib.sha256((repo / name).read_bytes()).hexdigest()
+            if (repo / name).is_file()
+            else "missing"
+        )
         for name in files
     }
     try:

@@ -119,11 +119,20 @@ with production-role briefs; it does not launch an autonomous crew of agents.
 | Continuity and final acceptance | Plot, actors, proportions, costume, props, eyelines, motion, time/weather/light, clean boundaries, pleasant sound and complete ending are independently reviewed |
 | Locale captions | Media, audio, voice record and SRT/VTT locales agree; English readability is checked, and each localization requires fluent review |
 | Maximum reuse | Reuse verified actor/set references and saved native takes; stable prompt prefixes and local caches retain exact constraints and original acting/timing |
+| Provider composer preflight | Read back the complete actual prompt, actor, exact reference hashes, saved voice, native audio, duration, one-output setting and current credit quote before activation; a new cinema receipt requires the matching attestation |
 | Local finishing | Caption/sound repairs reuse a verified native timeline; no silent TTS replacement, stretched speech, repeated-shot padding or new generation when a local repair suffices |
 | Evidence and versioning | Latest private rules/build are snapshotted; drift holds production for explicit replan; negative reviews and originals remain historical |
 | Growth package | Accurate platform-specific titles, descriptions, relevant tags, category suggestions, localized captions, company/copyright credits and required AI/audience controls |
 | Search and engagement | Main story subject in YouTube title/opening description, supported aliases, episode context and metadata limits; observed visibility is separate from rank; comments/alerts requested only where permitted |
 | Archive and publication | Verified dated media copies and exact approved package are required; no claim of upload, availability or monetization without evidence |
+
+The composer preflight rejects appended old script text and ingredients left over
+from another character. It records an operator's UI observations; it does not
+inspect provider internals, guarantee billing limits or approve acting. Existing
+verified source files remain reusable without inventing historical preflight
+records. Derived media can cite a known original, while all native timing,
+performance and final-film gates still apply. See the
+[operator procedure](docs/director-studio.md#provider-composer-preflight).
 
 YouTube Made for Kids videos cannot enable comments or notifications. Other
 platforms require checking actual eligible controls, retaining moderation and

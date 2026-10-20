@@ -11,6 +11,7 @@ from app.services import story_studio as studio
 from test.services.test_studio_cinema import (
     configured as cinema_configured,
     ready_story,
+    submission_fixture,
 )
 
 
@@ -174,6 +175,7 @@ def test_flow_export_defaults_to_reuse_saved_take_instead_of_spending_again(
             "prompt_sha256": shot["prompt_sha256"],
             "asset_path": str(source),
             "provider": "test",
+            "submission_attestation": submission_fixture(shot, store, sid),
         },
     )
     repeated = studio.export_flow_bundle(store, sid)

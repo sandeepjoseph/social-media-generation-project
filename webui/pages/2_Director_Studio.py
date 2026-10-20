@@ -37,7 +37,6 @@ from app.services.studio_channel_setup import initialize_channel
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
 
-
 st.set_page_config(page_title="Director Studio", page_icon="🎬", layout="wide")
 st.title("Director Studio")
 st.caption(
@@ -194,9 +193,7 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
             intended_index = (
                 1
                 if intended_made_for_kids is True
-                else 2
-                if intended_made_for_kids is False
-                else 0
+                else 2 if intended_made_for_kids is False else 0
             )
             made_for_kids_choice = st.selectbox(
                 "Intended child-directed setting",
@@ -243,9 +240,7 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
                 audience_intent = (
                     True
                     if made_for_kids_choice == "Yes"
-                    else False
-                    if made_for_kids_choice == "No"
-                    else None
+                    else False if made_for_kids_choice == "No" else None
                 )
                 result = store.create_story(
                     {
@@ -379,9 +374,9 @@ with tab_creative:
                         "lines": [
                             {
                                 "line_id": "line-01",
-                                "role_id": "character-a"
-                                if active_cinema
-                                else "narrator",
+                                "role_id": (
+                                    "character-a" if active_cinema else "narrator"
+                                ),
                                 "text": "",
                                 "delivery": "",
                             }
@@ -501,6 +496,67 @@ with tab_flow:
     st.caption(
         "Receipts must bind the exported shot prompt hash and the exact imported asset hash. Unknown billing stays unknown. Account security warnings require a human hold and are never auto-retried."
     )
+    current_bundle = store.latest_artifact(story_id, "flow_bundle")
+    if current_bundle:
+        from app.services.studio_provider_preflight import attest_submission
+
+        st.subheader("Provider composer preflight")
+        st.caption(
+            "Enter observations from the actual provider UI after staging the shot. "
+            "The complete prompt, actor, references, voice, native audio and one-output quote must match. "
+            "This check does not submit generation or approve acting."
+        )
+        preflight_shots = current_bundle["document"]["shots"]
+        selected_preflight = st.selectbox(
+            "Staged shot",
+            [shot["shot_id"] for shot in preflight_shots],
+            key="preflight_shot",
+        )
+        actual_observation = st.text_area(
+            "Actual provider observation JSON", value="{}", key="provider_observation"
+        )
+        preflight_key = f"provider_preflight:{story_id}"
+        if st.button("Validate observed composer"):
+            try:
+                if profile_status(store, story_id)["needs_replan"]:
+                    raise ValueError(
+                        "Refresh and replan the changed production template first"
+                    )
+                selected = next(
+                    s for s in preflight_shots if s["shot_id"] == selected_preflight
+                )
+                attestation = attest_submission(
+                    selected,
+                    json.loads(actual_observation),
+                    story_id=story_id,
+                    storyboard_sha256=current_bundle["document"]["storyboard_sha256"],
+                )
+                store.add_artifact(
+                    story_id, "provider_submission_preflight", document=attestation
+                )
+                st.session_state[preflight_key] = {
+                    "observation": actual_observation,
+                    "bundle": current_bundle["sha256"],
+                    "shot_id": selected_preflight,
+                    "attestation": attestation,
+                }
+                st.success(
+                    "Composer matches. Reserve its quoted cost separately before one Generate activation."
+                )
+            except Exception as exc:
+                st.error(str(exc))
+        validated = st.session_state.get(preflight_key, {})
+        if (
+            validated.get("observation") == actual_observation
+            and validated.get("bundle") == current_bundle["sha256"]
+            and validated.get("shot_id") == selected_preflight
+        ):
+            st.download_button(
+                "Download submission attestation",
+                json.dumps(validated["attestation"], ensure_ascii=False, indent=2),
+                file_name=f"{story_id}-{selected_preflight}-submission-attestation.json",
+                mime="application/json",
+            )
     receipt_file = st.file_uploader(
         "Import a Flow receipt JSON", type=["json"], key="flow_receipt"
     )
@@ -601,7 +657,11 @@ with tab_qa:
                             "speech_mode"
                         ) == "native_dialogue" and receipts.get(
                             entry["shot_id"], {}
-                        ).get("asset_sha256") != entry.get("sha256"):
+                        ).get(
+                            "asset_sha256"
+                        ) != entry.get(
+                            "sha256"
+                        ):
                             raise ValueError(
                                 "Import the exact reviewed native performance receipt before assembly"
                             )
@@ -622,9 +682,11 @@ with tab_qa:
                                 music_path=native_music,
                                 music_rights_path=native_rights,
                                 caption_font=native_font,
-                                cleanup=json.loads(Path(native_cleanup).read_text())
-                                if native_cleanup
-                                else {},
+                                cleanup=(
+                                    json.loads(Path(native_cleanup).read_text())
+                                    if native_cleanup
+                                    else {}
+                                ),
                             )
                         else:
                             result = build_native_movie(
@@ -738,11 +800,15 @@ with tab_qa:
                     fluent_reviewer=master_caption_reviewer,
                     voice_record={
                         "locale": master_audio_locale,
-                        "status": "not_used"
-                        if master_voice_status == "not_used"
-                        else "reviewed"
-                        if master_voice_status == "reviewed"
-                        else "needs_review",
+                        "status": (
+                            "not_used"
+                            if master_voice_status == "not_used"
+                            else (
+                                "reviewed"
+                                if master_voice_status == "reviewed"
+                                else "needs_review"
+                            )
+                        ),
                         "voice_id": master_voice_id or None,
                         "provider": master_voice_provider,
                         "reviewer": master_voice_reviewer,
@@ -917,11 +983,15 @@ with tab_assets:
                         fluent_reviewer=caption_reviewer,
                         voice_record={
                             "locale": audio_locale,
-                            "status": "not_used"
-                            if voice_status == "not_used"
-                            else "reviewed"
-                            if voice_status == "reviewed"
-                            else "needs_review",
+                            "status": (
+                                "not_used"
+                                if voice_status == "not_used"
+                                else (
+                                    "reviewed"
+                                    if voice_status == "reviewed"
+                                    else "needs_review"
+                                )
+                            ),
                             "voice_id": voice_id or None,
                             "provider": voice_provider,
                             "reviewer": voice_reviewer,
@@ -951,14 +1021,14 @@ with tab_assets:
                 metadata=json.loads(prepared_metadata_json),
                 human_review={
                     "audience_reviewed": audience_reviewed,
-                    "made_for_kids_reviewed": True
-                    if made_for_kids_reviewed == "Yes"
-                    else False
-                    if made_for_kids_reviewed == "No"
-                    else None,
-                    "ai_realistic_content": None
-                    if ai_reviewed == "Needs review"
-                    else ai_reviewed,
+                    "made_for_kids_reviewed": (
+                        True
+                        if made_for_kids_reviewed == "Yes"
+                        else False if made_for_kids_reviewed == "No" else None
+                    ),
+                    "ai_realistic_content": (
+                        None if ai_reviewed == "Needs review" else ai_reviewed
+                    ),
                     "platform_assets": platform_assets,
                 },
             )

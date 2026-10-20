@@ -112,6 +112,33 @@ python -m app.services.story_studio import-performance-pilot STORY_ID pilot-revi
 python -m app.services.story_studio record-learning --criterion acting --text "Keep listening reactions motivated" --status applied
 ```
 
+## Provider composer preflight
+
+Before one reserved provider activation, observe the entire actual composer text,
+selected reference asset hashes, visible role, saved voice, native audio, duration,
+output count, model and live credit quote. Read the composer after replacement:
+some contenteditable controls retain old text. A substring match is insufficient.
+Reusing ingredients does not imply the next shot has the same actor or props.
+
+Create an observation JSON with `shot_id`, `prompt_text`, `reference_sha256`
+(a list), `visible_speaker_id`, `voice_id` (null for non-speaking action),
+`native_audio: true`, `output_count: 1`, `duration_seconds`, `model`,
+`quoted_credits`, and `observed_by`. These must be actual observations, not values
+blindly copied from the desired recipe. Then run:
+
+```sh
+python -m app.services.studio_provider_preflight bundle.json SHOT_ID observation.json --out attestation.json
+```
+
+Keep the credit reservation separate, activate Generate once, and attach the
+resulting document as `submission_attestation` in the downloaded take's receipt.
+Fresh cinema sources are rejected without a current, unchanged attestation.
+Already imported exact source hashes need no fabricated historical observation.
+A local derivative may identify an imported original with
+`native_original_source_sha256`; this inherits submission provenance, never a
+performance pass. Word accuracy and preflight do not establish lip synchronization.
+Every original or edited source still needs the required actual A/V review.
+
 ## Reviewed native movie assembly
 
 The Quality tab assembles an explicit reviewed selection of moving clips.
