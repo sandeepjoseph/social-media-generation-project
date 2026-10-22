@@ -249,8 +249,12 @@ class Tracker:
             if event.get('status') == 'public_verified':
                 if event['evidence']['kind'] not in {'native_library', 'native_public_player', 'official_api'} or not event['evidence'].get('public_visibility_observed'):
                     raise ValueError('Public verification requires observed native visibility')
-                if not event.get('url') or not event.get('master_sha256'):
-                    raise ValueError('Public verification needs a URL and bound upload master')
+                legacy_unknown = (
+                    release['quality'] == 'legacy_not_current_contract'
+                    and event['evidence'].get('upload_source_binding') == 'unverified_historical_variant'
+                )
+                if not event.get('url') or (not event.get('master_sha256') and not legacy_unknown):
+                    raise ValueError('Public verification needs a URL and bound upload master, or an explicitly unbound legacy observation')
             if event.get('url'):
                 url = urlsplit(event['url'])
                 if url.scheme != 'https' or not url.hostname or url.username or url.password:
@@ -290,7 +294,8 @@ class Tracker:
         for rid, release in sorted(self.catalog['releases'].items()):
             posts = {p: latest.get((rid, p), {'status': 'not_started'}) for p in release['targets']}
             all_verified = bool(posts) and all(p['status'] == 'public_verified' for p in posts.values())
-            rows.append({'release_id': rid, 'title': release['title'], 'quality': release['quality'], 'all_targets_public_verified': all_verified, 'platforms': posts})
+            all_bound = bool(posts) and all(p.get('master_sha256') and p.get('master_sha256') == release.get('master_sha256') for p in posts.values())
+            rows.append({'release_id': rid, 'title': release['title'], 'quality': release['quality'], 'all_targets_public_verified': all_verified, 'all_targets_exact_master_bound': all_bound, 'platforms': posts})
         return {'schema_version': SCHEMA, 'channel_id': self.catalog['channel_id'], 'generated_at': stamp(), 'file_count': len(self.catalog['files']), 'releases': rows}
 
     def verify_files(self):

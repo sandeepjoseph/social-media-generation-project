@@ -130,3 +130,17 @@ def test_studio_file_registration_updates_opt_in_tracker(tracker, tmp_path, monk
     outside = tmp_path / 'external.json'; outside.write_text('{}')
     with pytest.raises(ValueError, match='bind its working folder'):
         store.add_artifact(story['story_id'], 'research_document', path=outside)
+
+
+def test_legacy_public_visibility_cannot_imply_upload_byte_identity(tracker):
+    t = tracker
+    release = {**t.catalog['releases']['story.en.v2'], 'release_id': 'legacy.en.v1', 'quality': 'legacy_not_current_contract', 'targets': ['youtube_long']}
+    t.add_release(release)
+    observation = event(t, event_id='legacy-unbound', release_id='legacy.en.v1', evidence={'kind': 'native_library', 'public_visibility_observed': True, 'upload_source_binding': 'unverified_historical_variant', 'note': 'Visible Public; uploaded historical source variant unknown'})
+    observation.pop('master_sha256')
+    t.record(observation)
+    row = next(r for r in t.report()['releases'] if r['release_id'] == 'legacy.en.v1')
+    assert row['all_targets_public_verified']
+    assert not row['all_targets_exact_master_bound']
+    with pytest.raises(ValueError, match='bound upload master'):
+        t.record({**observation, 'event_id': 'new-cannot-be-unbound', 'release_id': 'story.en.v2'})

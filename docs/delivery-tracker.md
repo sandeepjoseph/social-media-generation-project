@@ -90,6 +90,14 @@ idempotency IDs and a SHA256 chain, with serialized atomic writes; duplicate IDs
 cannot append changed data. This detects accidental edits, not a malicious actor
 who can rewrite the whole ledger. Keep Git history as an additional audit trail.
 
+For `legacy_not_current_contract` editions only, a visibly Public post can be
+recorded without an upload SHA by explicitly declaring
+`evidence.upload_source_binding="unverified_historical_variant"`. Its local master
+is a reference, not a claim of which historical variant was uploaded. The report
+keeps `all_targets_exact_master_bound=false`; visibility cannot establish that
+old uploaded bytes match a current accepted movie. New accepted editions still
+require the exact upload-master SHA.
+
 Before publishing, inspect `report` for an existing URL. Unknown or processing
 is a verification task, not permission to upload a duplicate. A previously held
 edition must still satisfy Director Studio's current approval contract. The
