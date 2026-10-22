@@ -37,6 +37,15 @@ profile is a minimal fallback; restore a reviewed private profile to reuse your
 commercial direction, brand and applied learning. The actual private-channel
 inventory and operating locations belong in that private repository's README.
 
+Each new channel also receives an empty portable delivery tracker. Its launcher
+enables file-backed artifact and archive-copy inventory on registration; external
+downloads can be reconciled with the scan CLI. Private version/locale records and
+separate per-platform observations preserve what was generated, accepted, held,
+submitted, processing or actually verified Public. Local root mappings stay off
+Git so another laptop can restore media, bind its paths and verify hashes before
+resuming. This ledger does not approve a film or perform publishing. See the
+[tracker guide](docs/delivery-tracker.md).
+
 Native finishing preserves the exact 48 kHz timeline after loudness normalization
 and checks decoded audio samples. Source-review timestamps are validated before
 rendering as well as at final acceptance. Every Flow handoff also carries the
