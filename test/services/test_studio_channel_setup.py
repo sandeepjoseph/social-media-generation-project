@@ -41,6 +41,10 @@ def test_fresh_channel_loads_mandatory_cinema_and_isolated_state(tmp_path, monke
         == ""
     )
     assert 'llm_provider = ""' in (root / "config.toml").read_text()
+    tracker = json.loads((root / "delivery-tracker" / "catalog.json").read_text())
+    assert tracker["channel_id"] == "new-channel"
+    assert tracker["releases"] == {} and tracker["files"] == {}
+    assert json.loads((root / "channel.json").read_text())["delivery_tracker"] == "delivery-tracker"
 
 
 def test_reuses_rules_not_credentials_accounts_assets_or_approvals(tmp_path):

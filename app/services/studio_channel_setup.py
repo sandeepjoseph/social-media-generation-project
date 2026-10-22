@@ -307,6 +307,9 @@ def initialize_channel(
     config_path = root / "config.toml"
     config_path.write_text('[app]\nllm_provider = ""\n\n[ui]\n', encoding="utf-8")
     os.chmod(config_path, 0o600)
+    from app.services.studio_delivery_tracker import Tracker
+
+    Tracker.create(root / "delivery-tracker", channel_id)
     manifest = {
         "schema_version": 1,
         "channel_id": channel_id,
@@ -315,6 +318,7 @@ def initialize_channel(
         "runtime_config": "config.toml",
         "storage": "storage",
         "accounts": "accounts.json",
+        "delivery_tracker": "delivery-tracker",
         "cost_overrides": "cost-router-overrides.json",
         "status": "configure_local_credentials_and_accounts_before_generation_or_publication",
         "copied_credentials": False,

@@ -19,6 +19,7 @@ authorized, tested for acting, or connected to a publishing account in this fork
 | [New laptop / separate channel](docs/new-channel-setup.md) | Isolated settings, fresh accounts and reusable private policy |
 | [YouTube discovery and engagement](docs/youtube-discovery.md) | Search readiness, evidence, comments and notification restrictions |
 | [Media delivery](docs/media-delivery.md) | Dated copies, version preservation and hash verification |
+| [Portable file and publication tracker](docs/delivery-tracker.md) | Private media inventory, immutable editions, verified platform receipts and laptop handoff |
 
 ## What is implemented
 

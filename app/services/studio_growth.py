@@ -342,6 +342,17 @@ def _rights_status(evidence: Any) -> tuple[bool, list[str], dict[str, list[str]]
                 "Review source evidence entry; expected a structured rights status."
             )
             continue
+        # Plot-comparison citations are retained research history, not assets in
+        # the production. They cannot satisfy any adaptation/visual/voice/music
+        # coverage and this exception never clears actual reused material.
+        if (
+            entry.get("category") == "research_plot_comparison"
+            and entry.get("rights_status") == "reference_only_not_reused"
+            and _text(entry.get("source"))
+            and _text(entry.get("claim"))
+            and _text(entry.get("notes"))
+        ):
+            continue
         found = True
         status = _text(entry.get("rights_status") or entry.get("status")).casefold()
         category_value = re.sub(
