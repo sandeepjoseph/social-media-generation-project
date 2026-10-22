@@ -98,6 +98,7 @@ def test_upload_processing_and_owner_report_are_not_all_published(tracker):
         )
     )
     assert not t.report()["releases"][0]["all_targets_public_verified"]
+    assert not t.report()["releases"][0]["all_targets_exact_master_bound"]
 
 
 def test_verification_provenance_and_exact_master_required(tracker):

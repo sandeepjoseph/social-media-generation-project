@@ -471,7 +471,8 @@ class Tracker:
                 p["status"] == "public_verified" for p in posts.values()
             )
             all_bound = bool(posts) and all(
-                p.get("master_sha256")
+                p["status"] == "public_verified"
+                and p.get("master_sha256")
                 and p.get("master_sha256") == release.get("master_sha256")
                 for p in posts.values()
             )
