@@ -279,3 +279,11 @@ Keep commercial prompts, channel policy, credentials, account/billing informatio
 private media and review evidence outside this public repository. Private policy
 may be restored for authorized projects; a public clone alone cannot reproduce
 private assets, logins or historical approvals.
+
+
+Production QA retains removed-shot receipts as history only when a saved earlier
+Flow recipe proves the same shot ID and prompt hash. Every current shot still
+requires its exact current recipe and media checks; unknown extra receipts remain
+blocked. Plot-comparison sources may explicitly record `reference_only_not_reused`
+with provenance notes. That research status never clears visual, voice, script or
+music assets; their separate rights records remain mandatory.

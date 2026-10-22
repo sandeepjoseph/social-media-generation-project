@@ -521,7 +521,8 @@ class StudioStore:
     def _initialize(self) -> None:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS stories (
                     story_id TEXT PRIMARY KEY, title TEXT NOT NULL, request_json TEXT NOT NULL,
                     requested_duration_seconds INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -570,7 +571,8 @@ class StudioStore:
                     metrics_json TEXT NOT NULL, cost_json TEXT NOT NULL
                 );
                 PRAGMA user_version = 1;
-            """)
+            """
+            )
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(source_evidence)")
             }
@@ -1673,12 +1675,39 @@ def _publication_metadata(request, metadata):
     return result
 
 
+def _retired_recipe_receipts(store, story_id, expected, actual):
+    """Recognize removed shots only through their saved historical recipe hashes.
+
+    Never delete history or excuse a missing/changed current shot. Unknown extra
+    receipt IDs remain a mismatch; only genuinely earlier recipes establish scope.
+    """
+    extras = set(actual) - set(expected)
+    if not extras:
+        return []
+    with store.connect() as conn:
+        recipes = conn.execute(
+            "SELECT document_json FROM artifacts WHERE story_id=? AND kind='flow_bundle'",
+            (story_id,),
+        ).fetchall()
+    known = set()
+    for item in recipes:
+        document = json.loads(item["document_json"] or "{}")
+        for shot in document.get("shots", []):
+            known.add((shot.get("shot_id"), shot.get("prompt_sha256")))
+    return sorted(
+        shot_id
+        for shot_id in extras
+        if (shot_id, actual[shot_id]["prompt_sha256"]) in known
+    )
+
+
 def quality_report(
     store: StudioStore, story_id: str, *, master_path: str | Path | None = None
 ) -> dict[str, Any]:
     from app.services.studio_captions import find_localized_variant
 
     issues = []
+    retired_receipts = []
     evidence = store.evidence(story_id)
     if store.phase(story_id, "flow")["status"] != "complete":
         issues.append("manual_flow_receipts_incomplete")
@@ -1703,7 +1732,13 @@ def quality_report(
             issues.append(
                 f"needs_research: evidence confidence unresolved for {row['source']}"
             )
-        if row["rights_status"] not in {
+        reference_only = (
+            row.get("category") == "research_plot_comparison"
+            and row["rights_status"] == "reference_only_not_reused"
+            and bool(str(row.get("claim") or "").strip())
+            and bool(str(row.get("notes") or "").strip())
+        )
+        if not reference_only and row["rights_status"] not in {
             "original",
             "licensed",
             "public_domain",
@@ -1818,8 +1853,13 @@ def quality_report(
         actual = {
             row["shot_id"]: row for row in store._flow_receipt_fingerprints(story_id)
         }
-        if set(expected) != set(actual) or any(
-            actual[key]["prompt_sha256"] != expected[key] for key in expected
+        retired_receipts = _retired_recipe_receipts(store, story_id, expected, actual)
+        active = {
+            key: value for key, value in actual.items() if key not in retired_receipts
+        }
+        if set(expected) != set(active) or any(
+            key not in active or active[key]["prompt_sha256"] != expected[key]
+            for key in expected
         ):
             issues.append("flow_receipts_do_not_match_current_bundle")
         for row in store.flow_receipts(story_id):
@@ -1871,6 +1911,7 @@ def quality_report(
         "passed": status == "passed",
         "issues": issues,
         "evidence_count": len(evidence),
+        "retired_recipe_receipt_ids": retired_receipts,
         "script_sha256": script_sha,
         "screenplay_sha256": screenplay["sha256"] if screenplay else None,
         "storyboard_sha256": storyboard["sha256"] if storyboard else None,
