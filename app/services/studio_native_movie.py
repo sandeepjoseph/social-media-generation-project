@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import math
+import shutil
 import textwrap
 
 
@@ -480,6 +481,43 @@ def render_sequence(entries, target):
     return technical
 
 
+def reuse_native_render(plan, record_path, target):
+    """Reuse only the exact reviewed-plan concat; this grants no creative pass."""
+    from app.services.studio_native_media import decode_video
+
+    record_path, target = Path(record_path), Path(target)
+    record = json.loads(record_path.read_text())
+    duration = sum(s["duration_seconds"] for s in plan["shots"])
+    if (
+        record.get("media_plan_digest") != media_plan_digest(plan)
+        or record.get("storyboard_sha256") != plan["storyboard_file_sha256"]
+        or record.get("duration_seconds") != duration
+        or record.get("native_voice_replaced") is not False
+        or record.get("retiming") is not False
+        or record.get("loops_or_still_padding") is not False
+    ):
+        raise ValueError(
+            "Native render cache must bind this exact unchanged media plan"
+        )
+    source = Path((record.get("source_native_master") or {}).get("path", ""))
+    expected_sha = (record.get("source_native_master") or {}).get("sha256")
+    if not source.is_file() or not expected_sha or sha(source) != expected_sha:
+        raise ValueError("Native render cache is missing or changed")
+    if target.exists():
+        raise FileExistsError("Preserve the prior native master version")
+    technical, _ = decode_video(source, expected_frames=round(duration * 24))
+    if not technical["technical_pass"] or not technical["has_source_audio"]:
+        raise ValueError("Native render cache failed its actual frame/audio check")
+    temporary = target.with_suffix(target.suffix + ".partial")
+    if temporary.exists():
+        raise FileExistsError("Preserve the incomplete cache-copy evidence")
+    shutil.copyfile(source, temporary)
+    if sha(temporary) != expected_sha:
+        raise ValueError("Native render cache copy changed")
+    temporary.replace(target)
+    return technical
+
+
 def build_native_movie(
     board_path,
     selection_path,
@@ -489,6 +527,7 @@ def build_native_movie(
     music=None,
     music_rights=None,
     caption_font="Arial",
+    native_render_cache=None,
 ):
     """Local assembly. Review cuts precede sequence QA; exports never grant release."""
     board_path, selection_path, output = map(Path, (board_path, selection_path, output))
@@ -536,7 +575,11 @@ def build_native_movie(
     ]:
         if existing.exists():
             raise FileExistsError(existing)
-    technical = render_sequence(plan["shots"], raw)
+    technical = (
+        reuse_native_render(plan, native_render_cache, raw)
+        if native_render_cache
+        else render_sequence(plan["shots"], raw)
+    )
     srt, vtt = write_captions(
         plan["shots"],
         caption_target,
@@ -616,6 +659,15 @@ def build_native_movie(
         "captions": [{"path": str(p.resolve()), "sha256": sha(p)} for p in [srt, vtt]],
         "music_rights_sha256": sha(music_rights) if rights else None,
         "native_technical": technical,
+        "native_render_cache": (
+            {
+                "path": str(Path(native_render_cache).resolve()),
+                "sha256": sha(native_render_cache),
+                "technical_reuse_only_not_creative_approval": True,
+            }
+            if native_render_cache
+            else None
+        ),
         "final_technical": final,
         "limits": "Encoding, loudness, and spatial conforming do not establish performance, lip timing, continuity or whole-film editorial approval.",
     }
@@ -632,6 +684,11 @@ def main():
     parser.add_argument("--music", type=Path)
     parser.add_argument("--music-rights", type=Path)
     parser.add_argument("--caption-font", default="Arial")
+    parser.add_argument(
+        "--native-render-cache",
+        type=Path,
+        help="Reuse an exact prior canonical render record; all current review gates still apply",
+    )
     parser.add_argument(
         "--prepare-readable-captions",
         action="store_true",
@@ -666,6 +723,7 @@ def main():
         music=args.music,
         music_rights=args.music_rights,
         caption_font=args.caption_font,
+        native_render_cache=args.native_render_cache,
     )
     print(json.dumps(record, indent=2))
 

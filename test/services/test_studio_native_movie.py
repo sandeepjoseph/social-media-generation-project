@@ -448,3 +448,85 @@ def test_mixed_length_and_audio_layouts_keep_native_frame_and_pcm_timing(tmp_pat
         assert samples == 120000
     with pytest.raises(FileExistsError):
         movie.render_sequence(entries, target)
+
+
+def native_cache_fixture(tmp_path, plan):
+    source = tmp_path / "prior-native.mkv"
+    source.write_bytes(b"fixture-native-clock-and-audio")
+    record = {
+        "media_plan_digest": movie.media_plan_digest(plan),
+        "storyboard_sha256": plan["storyboard_file_sha256"],
+        "duration_seconds": sum(s["duration_seconds"] for s in plan["shots"]),
+        "native_voice_replaced": False,
+        "retiming": False,
+        "loops_or_still_padding": False,
+        "source_native_master": {"path": str(source), "sha256": movie.sha(source)},
+    }
+    path = tmp_path / "prior-render.json"
+    document(path, record)
+    return path, source, record
+
+
+def test_exact_native_cache_is_decoded_and_hash_verified(selection, monkeypatch):
+    from app.services import studio_native_media
+
+    _, plan, tmp, _ = selection
+    record, source, _ = native_cache_fixture(tmp, plan)
+    calls = []
+
+    def decode(path, *, expected_frames):
+        calls.append((path, expected_frames))
+        return {"technical_pass": True, "has_source_audio": True}, {}
+
+    monkeypatch.setattr(studio_native_media, "decode_video", decode)
+    target = tmp / "new-native.mkv"
+    assert movie.reuse_native_render(plan, record, target)["technical_pass"]
+    assert calls == [(source, 8640)]
+    assert movie.sha(target) == movie.sha(source)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("media_plan_digest", "wrong"),
+        ("storyboard_sha256", "wrong"),
+        ("duration_seconds", 361),
+        ("native_voice_replaced", True),
+        ("retiming", True),
+        ("loops_or_still_padding", True),
+    ],
+)
+def test_stale_or_altered_native_cache_is_rejected(selection, key, value):
+    _, plan, tmp, _ = selection
+    record, _, doc = native_cache_fixture(tmp, plan)
+    doc[key] = value
+    document(record, doc)
+    with pytest.raises(ValueError, match="exact unchanged media plan"):
+        movie.reuse_native_render(plan, record, tmp / "new.mkv")
+    assert not (tmp / "new.mkv").exists()
+
+
+def test_changed_native_cache_bytes_are_rejected(selection):
+    _, plan, tmp, _ = selection
+    record, source, _ = native_cache_fixture(tmp, plan)
+    source.write_bytes(b"changed cached movie")
+    with pytest.raises(ValueError, match="missing or changed"):
+        movie.reuse_native_render(plan, record, tmp / "new.mkv")
+
+
+def test_native_cache_cannot_skip_whole_sequence_review(selection, monkeypatch):
+    board, plan, tmp, board_path = selection
+    plan_path = tmp / "plan.json"
+    document(plan_path, plan)
+
+    def forbidden(*args):
+        raise AssertionError("cache was reached before required whole-movie gate")
+
+    monkeypatch.setattr(movie, "reuse_native_render", forbidden)
+    with pytest.raises(ValueError, match="whole-sequence audiovisual review"):
+        movie.build_native_movie(
+            board_path,
+            plan_path,
+            tmp / "final.mp4",
+            native_render_cache=tmp / "prior.json",
+        )

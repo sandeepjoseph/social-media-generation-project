@@ -43,6 +43,14 @@ mandatory one-click/reserved-attempt and complete-review-response contracts;
 external browser actions still require operator reconciliation and verified
 publication receipts. See the [operator guide](docs/director-studio.md).
 
+Final scoring can reuse the exact native concat from a prior canonical review
+cut with `--native-render-cache /absolute/path/to/review-cut.json`. Reuse checks
+the ordered media-plan digest, storyboard, duration, original-voice/timing flags,
+source bytes and every decoded native frame before copying it. A changed shot,
+caption plan or review binding rejects the cache. Component, whole-sequence,
+rights, final-film and owner-publication gates still apply; a cache is only a
+technical optimization, and never a creative approval.
+
 ## Products used and their responsibilities
 
 The following components have distinct responsibilities. External assistant/browser
