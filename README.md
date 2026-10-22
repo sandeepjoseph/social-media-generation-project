@@ -19,6 +19,8 @@ authorized, tested for acting, or connected to a publishing account in this fork
 | [New laptop / separate channel](docs/new-channel-setup.md) | Isolated settings, fresh accounts and reusable private policy |
 | [YouTube discovery and engagement](docs/youtube-discovery.md) | Search readiness, evidence, comments and notification restrictions |
 | [Media delivery](docs/media-delivery.md) | Dated copies, version preservation and hash verification |
+| [Portable file and publication tracker](docs/delivery-tracker.md) | Private media inventory, immutable editions, verified platform receipts and laptop handoff |
+| [Browser resource policy](docs/browser-sessions.md) | One working tab per needed service, safe cleanup and interrupted-connection recovery |
 
 ## What is implemented
 
@@ -35,6 +37,15 @@ search-readiness policy and permitted-engagement preferences. The bare generic
 profile is a minimal fallback; restore a reviewed private profile to reuse your
 commercial direction, brand and applied learning. The actual private-channel
 inventory and operating locations belong in that private repository's README.
+
+Each new channel also receives an empty portable delivery tracker. Its launcher
+enables file-backed artifact and archive-copy inventory on registration; external
+downloads can be reconciled with the scan CLI. Private version/locale records and
+separate per-platform observations preserve what was generated, accepted, held,
+submitted, processing or actually verified Public. Local root mappings stay off
+Git so another laptop can restore media, bind its paths and verify hashes before
+resuming. This ledger does not approve a film or perform publishing. See the
+[tracker guide](docs/delivery-tracker.md).
 
 Native finishing preserves the exact 48 kHz timeline after loudness normalization
 and checks decoded audio samples. Source-review timestamps are validated before

@@ -1035,7 +1035,9 @@ class StudioStore:
             archive_kind = (
                 "imported_caption"
                 if kind == "caption_track"
-                else "imported_media" if kind in {"master", "localized_media"} else kind
+                else "imported_media"
+                if kind in {"master", "localized_media"}
+                else kind
             )
             archive = _archive_media_path(
                 self,
@@ -1045,6 +1047,27 @@ class StudioStore:
                 artifact_provenance=artifact_provenance,
             )
             artifact_provenance["delivery_archive"] = archive
+        tracker_path = os.environ.get("STORY_STUDIO_DELIVERY_TRACKER_PATH")
+        if path and tracker_path:
+            from app.services.studio_delivery_tracker import Tracker
+
+            tracker = Tracker(tracker_path)
+            tracked = tracker.track_file(resolved, story_id=story_id)
+            if tracked.get("sha256") and tracked["sha256"] != sha:
+                raise ValueError("Artifact bytes changed during tracker registration")
+            archived_path = (artifact_provenance.get("delivery_archive") or {}).get(
+                "archive_path"
+            )
+            if archived_path:
+                tracked["archive_copy"] = tracker.track_file(
+                    archived_path, story_id=story_id
+                )
+                if (
+                    tracked["archive_copy"].get("sha256")
+                    and tracked["archive_copy"]["sha256"] != sha
+                ):
+                    raise ValueError("Tracked archive copy does not match the artifact")
+            artifact_provenance["delivery_tracker"] = tracked
         aid = uuid.uuid4().hex
         with self.transaction() as conn:
             conn.execute(
@@ -2344,9 +2367,9 @@ def request_screenplay_draft(
                 "action": "observable character decisions and physical performance",
             }
         )
-        prompt["output_contract"]["scenes"][0]["lines"][0][
-            "line_id"
-        ] = "unique stable line id"
+        prompt["output_contract"]["scenes"][0]["lines"][0]["line_id"] = (
+            "unique stable line id"
+        )
         prompt["constraints"].extend(
             [
                 "Write a film performed by characters. The narrator must not deliver character dialogue or explain every visible action.",
