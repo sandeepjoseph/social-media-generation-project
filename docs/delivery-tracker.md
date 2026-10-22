@@ -8,6 +8,12 @@ the production application only between jobs using the normal drift/replan rules
 
 New channel setup initializes an empty `delivery-tracker` automatically. Existing
 channels use the explicit `init` command below; existing state is never reset.
+The channel launcher enables `STORY_STUDIO_DELIVERY_TRACKER_PATH` and rebases its
+channel/archive aliases on that laptop. File-backed Studio artifacts and verified
+archive copies are then inventoried on registration, with hashes retained in the
+artifact's provenance. A missing root binding or write failure holds that import
+for reconciliation rather than silently losing its tracker record. Structured
+documents stored only in SQLite remain part of the separate database backup.
 
 Keep `catalog.json` and `events.jsonl` in your **private** channel repository.
 Never put production records, commercial prompts, credentials or media binaries
@@ -75,7 +81,8 @@ After a real platform action/check, use `record /path/to/observation.json`:
 ```
 
 Statuses distinguish `prepared`, `submitted`, `processing`, `historical_published`,
-`owner_reported`, `public_verified`, `private`, `held`, `failed` and `unknown`.
+`owner_reported`, `published_visibility_unverified`, `public_verified`, `private`,
+`held`, `failed` and `unknown`.
 Only observed official-library/player/API visibility can be `public_verified`;
 an owner upload message or an old receipt cannot. Evidence notes should specify
 whether actual playback was checked. Use explicit timezone offsets. Events have
@@ -97,8 +104,11 @@ git -C /path/to/private/channel push
 ```
 
 Run scan after saving generated assets, then record each publication observation
-immediately after its native result. These are explicit operator/CLI integration
-steps; there is no background scheduler or secret-dependent auto publisher.
+immediately after its native result. Registered Studio files are tracked through
+the enabled hook; external provider downloads need the explicit reconciliation
+scan until imported. Bind any external working folder before importing it. The
+publication observations remain explicit operator/CLI steps; there is no
+background scheduler or secret-dependent auto publisher.
 Never count "upload complete" as public playback, monetization approval or income.
 
 On another laptop, clone the source and private repositories, copy/restore media,

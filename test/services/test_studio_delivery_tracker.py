@@ -115,3 +115,18 @@ def test_research_citations_do_not_clear_reused_asset_rights():
     assert not _rights_status([reference])[0]
     assert not _rights_status([*assets, {**reference, 'category': 'visual'}])[0]
     assert not _rights_status([*assets, {**reference, 'notes': ''}])[0]
+
+
+def test_studio_file_registration_updates_opt_in_tracker(tracker, tmp_path, monkeypatch):
+    from app.services.story_studio import StudioStore
+    t = tracker
+    monkeypatch.setenv('STORY_STUDIO_DELIVERY_TRACKER_PATH', str(t.root))
+    store = StudioStore(tmp_path / 'studio.sqlite3')
+    story = store.create_story({'title': 'Sample', 'premise': 'A child learns to share', 'profile_id': 'generic_public_starter'})
+    path = t.resolve({'root': 'media', 'relative_path': 'movie_v2.mp4'})
+    artifact = store.add_artifact(story['story_id'], 'review_document', path=path)
+    assert artifact['provenance']['delivery_tracker']['sha256'] == digest(path)
+    assert t.report()['file_count'] == 1
+    outside = tmp_path / 'external.json'; outside.write_text('{}')
+    with pytest.raises(ValueError, match='bind its working folder'):
+        store.add_artifact(story['story_id'], 'research_document', path=outside)

@@ -309,7 +309,8 @@ def initialize_channel(
     os.chmod(config_path, 0o600)
     from app.services.studio_delivery_tracker import Tracker
 
-    Tracker.create(root / "delivery-tracker", channel_id)
+    tracker = Tracker.create(root / "delivery-tracker", channel_id)
+    tracker.bind_root("channel", root)
     manifest = {
         "schema_version": 1,
         "channel_id": channel_id,
@@ -357,11 +358,20 @@ def channel_environment(root):
     serialized = json.dumps(profile, indent=2, ensure_ascii=False) + "\n"
     if profile_path.read_text(encoding="utf-8") != serialized:
         profile_path.write_text(serialized, encoding="utf-8")
+    tracker_environment = {}
+    if manifest.get("delivery_tracker"):
+        from app.services.studio_delivery_tracker import Tracker
+
+        tracker = Tracker(root / manifest["delivery_tracker"])
+        tracker.bind_root("channel", root)
+        tracker.bind_root("archive", profile["media_delivery"]["destination"])
+        tracker_environment["STORY_STUDIO_DELIVERY_TRACKER_PATH"] = str(tracker.root)
     return {
         "STORY_STUDIO_PROFILE_PATH": str(profile_path),
         "STORY_STUDIO_CONFIG_PATH": str(root / manifest["runtime_config"]),
         "STORY_STUDIO_STORAGE_ROOT": str(root / manifest["storage"]),
         "STORY_STUDIO_COST_OVERRIDES_PATH": str(root / manifest["cost_overrides"]),
+        **tracker_environment,
     }
 
 

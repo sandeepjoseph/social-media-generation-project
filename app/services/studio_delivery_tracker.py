@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = 1
 MEDIA_SUFFIXES = {'.mp4', '.mov', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.wav', '.mp3', '.m4a', '.flac', '.srt', '.vtt', '.ass', '.json', '.txt', '.md', '.pdf', '.csv', '.html'}
-STATUSES = {'not_started', 'prepared', 'submitted', 'processing', 'historical_published', 'owner_reported', 'public_verified', 'private', 'held', 'failed', 'unknown'}
+STATUSES = {'not_started', 'prepared', 'submitted', 'processing', 'historical_published', 'owner_reported', 'published_visibility_unverified', 'public_verified', 'private', 'held', 'failed', 'unknown'}
 PLATFORMS = {'youtube_long', 'youtube_short', 'facebook_reels', 'instagram_reels', 'tiktok', 'dailymotion', 'rumble'}
 KEY = re.compile(r'^[a-z0-9][a-z0-9._-]{0,127}$')
 SHA = re.compile(r'^[0-9a-f]{64}$')
@@ -164,6 +164,36 @@ class Tracker:
                 self.catalog['files'][key] = item
             atomic(self.catalog_path, self.catalog)
         return len(found)
+
+    def track_file(self, path, *, story_id=None):
+        """Track one registered Studio artifact without rescanning the archive."""
+        raw = Path(path).expanduser()
+        if raw.is_symlink():
+            raise ValueError('Artifact tracker does not follow symlinks')
+        path = raw.resolve()
+        if path.suffix.lower() not in MEDIA_SUFFIXES or any(word in path.name.lower() for word in EXCLUDED):
+            return {'status': 'excluded_non_delivery_file'}
+        roots = json.loads(self.roots_path.read_text())
+        matches = [(alias, Path(root).resolve()) for alias, root in roots.items() if path.is_relative_to(Path(root).resolve())]
+        if not matches:
+            raise ValueError('Artifact is outside tracker roots; bind its working folder before importing')
+        alias, base = max(matches, key=lambda pair: len(pair[1].parts))
+        relative = path.relative_to(base).as_posix()
+        if any(word in relative.lower() for word in EXCLUDED):
+            return {'status': 'excluded_non_delivery_file'}
+        key = hashlib.sha256((alias + ':' + relative).encode()).hexdigest()
+        item = {'root': alias, 'relative_path': relative, 'sha256': digest(path), 'bytes': path.stat().st_size, 'story_id': story_id, 'observed_at': stamp()}
+        with locked(self.root):
+            self._reload()
+            previous = self.catalog['files'].get(key)
+            history = list((previous or {}).get('previous_bytes', []))
+            if previous and previous['sha256'] != item['sha256']:
+                history.append({k: previous[k] for k in ('sha256', 'bytes', 'observed_at')})
+            if history:
+                item['previous_bytes'] = history
+            self.catalog['files'][key] = item
+            atomic(self.catalog_path, self.catalog)
+        return {'status': 'tracked', 'root': alias, 'relative_path': relative, 'sha256': item['sha256']}
 
     def add_release(self, release):
         """Explicit immutable release identity; review evidence does not transfer."""
