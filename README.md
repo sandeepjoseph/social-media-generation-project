@@ -51,6 +51,15 @@ caption plan or review binding rejects the cache. Component, whole-sequence,
 rights, final-film and owner-publication gates still apply; a cache is only a
 technical optimization, and never a creative approval.
 
+For a new movie, `app.services.studio_native_movie --prepare-native-sequence`
+can prepare a reviewed-component PCM `.mkv`, its receipt and localized captions
+without a redundant unscored HD encode. Feed that exact receipt and source plan
+to `app.services.studio_native_finish`, then perform complete scored-film and
+every-boundary audiovisual review before any approval. The finisher preserves
+selected native room tone by default and conforms the final audio to 48 kHz;
+an explicit non-speaking mute requires source-review evidence and cannot mute
+actor dialogue. None of these preparation steps permits publication.
+
 ## Products used and their responsibilities
 
 The following components have distinct responsibilities. External assistant/browser

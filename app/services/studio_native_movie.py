@@ -518,6 +518,60 @@ def reuse_native_render(plan, record_path, target):
     return technical
 
 
+def prepare_native_sequence(board_path, selection_path, output):
+    """Build a review-only native PCM timeline for the canonical finisher.
+
+    This avoids a redundant unscored HD encode. All component gates apply;
+    the scored movie still requires actual complete-film/boundary review.
+    """
+    board_path, selection_path, output = map(Path, (board_path, selection_path, output))
+    if output.suffix.lower() != ".mkv":
+        raise ValueError("Native PCM sequence output must use .mkv")
+    board, plan = json.loads(board_path.read_text()), json.loads(
+        selection_path.read_text()
+    )
+    plan["current_storyboard_file_sha256"] = sha(board_path)
+    issues = validate_plan(board, plan, require_sequence_review=False)
+    if issues:
+        raise ValueError("; ".join(issues))
+    caption_target = output.with_name(output.stem + "_Captions." + plan["locale"])
+    for path in [
+        output,
+        output.with_suffix(".json"),
+        Path(str(caption_target) + ".srt"),
+        Path(str(caption_target) + ".vtt"),
+    ]:
+        if path.exists():
+            raise FileExistsError("Preserve the prior native sequence version")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    technical = render_sequence(plan["shots"], output)
+    captions = write_captions(plan["shots"], caption_target, locale=plan["locale"])
+    native = {"path": str(output.resolve()), "sha256": sha(output)}
+    record = {
+        "status": "pending_actual_complete_scored_movie_av_review",
+        "publication_allowed": False,
+        "human_review_claim": False,
+        "native_sequence_only": True,
+        "review_cut": True,
+        "native_voice_replaced": False,
+        "retiming": False,
+        "loops_or_still_padding": False,
+        "duration_seconds": sum(s["duration_seconds"] for s in plan["shots"]),
+        "locale": plan["locale"],
+        "media_plan_digest": media_plan_digest(plan),
+        "selection_path": str(selection_path.resolve()),
+        "selection_sha256": sha(selection_path),
+        "storyboard_sha256": sha(board_path),
+        "master": native,
+        "source_native_master": native,
+        "native_technical": technical,
+        "captions": [{"path": str(p.resolve()), "sha256": sha(p)} for p in captions],
+        "limits": "Native timeline preparation is not whole-film, sound, caption or publication approval. Use the canonical finisher, then actual final-film and every-boundary review.",
+    }
+    output.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def build_native_movie(
     board_path,
     selection_path,
@@ -681,6 +735,11 @@ def main():
     parser.add_argument("selection", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--review-cut", action="store_true")
+    parser.add_argument(
+        "--prepare-native-sequence",
+        action="store_true",
+        help="Prepare only a gated native PCM .mkv and captions for the canonical finisher; never approval",
+    )
     parser.add_argument("--music", type=Path)
     parser.add_argument("--music-rights", type=Path)
     parser.add_argument("--caption-font", default="Arial")
@@ -695,6 +754,23 @@ def main():
         help="Write a new English caption-plan JSON candidate; do not render or approve",
     )
     args = parser.parse_args()
+    if args.prepare_native_sequence:
+        if (
+            args.review_cut
+            or args.music
+            or args.music_rights
+            or args.native_render_cache
+        ):
+            parser.error(
+                "native sequence preparation cannot also request a final/review render or cache"
+            )
+        print(
+            json.dumps(
+                prepare_native_sequence(args.board, args.selection, args.output),
+                indent=2,
+            )
+        )
+        return
     if args.prepare_readable_captions:
         from app.services.studio_caption_readability import prepare_caption_plan
 

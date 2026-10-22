@@ -530,3 +530,50 @@ def test_native_cache_cannot_skip_whole_sequence_review(selection, monkeypatch):
             tmp / "final.mp4",
             native_render_cache=tmp / "prior.json",
         )
+
+
+def test_native_sequence_preparation_keeps_all_component_gates(selection, monkeypatch):
+    board, plan, tmp, board_path = selection
+    plan["shots"][0]["component_review_pass"] = False
+    path = tmp / "held-plan.json"
+    document(path, plan)
+
+    def forbidden(*args):
+        raise AssertionError("Unreviewed component reached native render")
+
+    monkeypatch.setattr(movie, "render_sequence", forbidden)
+    with pytest.raises(ValueError, match="Unreviewed moving component"):
+        movie.prepare_native_sequence(board_path, path, tmp / "native.mkv")
+
+
+def test_native_sequence_is_explicitly_only_an_unapproved_candidate(
+    selection, monkeypatch
+):
+    board, plan, tmp, board_path = selection
+    path = tmp / "plan.json"
+    document(path, plan)
+
+    def render(entries, target):
+        target.write_bytes(b"fixture native PCM timeline")
+        return {"technical_pass": True, "fully_decoded_frames": 8640, "fps": 24}
+
+    monkeypatch.setattr(movie, "render_sequence", render)
+    out = tmp / "native.mkv"
+    result = movie.prepare_native_sequence(board_path, path, out)
+    assert result["native_sequence_only"] is True
+    assert result["publication_allowed"] is False
+    assert result["human_review_claim"] is False
+    assert "pending_actual_complete" in result["status"]
+    assert result["source_native_master"]["sha256"] == movie.sha(out)
+    assert result["media_plan_digest"] == movie.media_plan_digest(plan)
+    assert len(result["captions"]) == 2
+    with pytest.raises(FileExistsError):
+        movie.prepare_native_sequence(board_path, path, out)
+
+
+def test_native_pcm_sequence_requires_explicit_container(selection):
+    _, plan, tmp, board_path = selection
+    path = tmp / "plan.json"
+    document(path, plan)
+    with pytest.raises(ValueError, match="must use .mkv"):
+        movie.prepare_native_sequence(board_path, path, tmp / "mistaken-final.mp4")

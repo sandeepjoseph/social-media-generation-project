@@ -161,3 +161,71 @@ def test_normalized_fractional_movie_retains_native_sample_clock(tmp_path):
     with av.open(str(encoded)) as container:
         decoded_samples = sum(frame.samples for frame in container.decode(audio=0))
     assert abs(decoded_samples - expected) <= 2048
+
+
+def test_reviewed_non_speaking_room_tone_is_preserved_by_default(tmp_path):
+    _, plan, _ = plan_fixture(tmp_path)
+    plan["shots"][0].pop("dialogue")
+    import av
+    import numpy as np
+    from app.services.studio_native_media import run_ffmpeg
+
+    plan["shots"][0]["duration_seconds"] = 1
+    output = tmp_path / "preserved-native-ambience.wav"
+    run_ffmpeg(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=630:sample_rate=48000:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo:d=1",
+            "-filter_complex_threads",
+            "1",
+            "-filter_complex",
+            finish.audio_graph(plan, {}),
+            "-map",
+            "[a]",
+            "-c:a",
+            "pcm_f32le",
+            output,
+        ]
+    )
+    with av.open(str(output)) as container:
+        frames = list(container.decode(audio=0))
+    assert sum(frame.samples for frame in frames) == 48000
+    # This fails if a silent-action flag erases its real source ambience.
+    assert max(float(np.max(np.abs(frame.to_ndarray()))) for frame in frames) > 0.01
+
+
+def test_explicit_non_dialogue_mute_still_requires_actual_source_evidence(tmp_path):
+    _, plan, _ = plan_fixture(tmp_path)
+    plan["shots"][0].pop("dialogue")
+    with pytest.raises(ValueError, match="hash-bound actual source review"):
+        finish.audio_graph(
+            plan, {"a": {"mute_non_dialogue": True, "reason": "fixture"}}
+        )
+    proof = tmp_path / "actual-review.txt"
+    proof.write_text("Fixture source evidence, never a real creative approval")
+    graph = finish.audio_graph(
+        plan,
+        {
+            "a": {
+                "mute_non_dialogue": True,
+                "reason": "fixture reviewed unwanted sound",
+                "source_review_path": str(proof),
+                "source_review_sha256": movie.sha(proof),
+            }
+        },
+    )
+    assert "volume=0" in graph
+
+
+def test_native_actor_dialogue_cannot_be_muted_even_with_a_cleanup_flag(tmp_path):
+    _, plan, _ = plan_fixture(tmp_path)
+    with pytest.raises(ValueError, match="dialogue cannot be muted"):
+        finish.audio_graph(
+            plan, {"a": {"mute_non_dialogue": True, "reason": "forbidden"}}
+        )

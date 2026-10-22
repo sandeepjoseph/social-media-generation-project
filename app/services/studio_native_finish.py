@@ -66,6 +66,8 @@ def cleanup_windows(plan, cleanup):
         raise ValueError("Unknown cleanup shot")
     for sid, item in cleanup.items():
         entry = known[sid]
+        if item.get("mute_non_dialogue") is True and entry.get("dialogue"):
+            raise ValueError("Native actor dialogue cannot be muted")
         start, end = (
             item.get("start_seconds", 0),
             item.get("end_seconds", entry["duration_seconds"]),
@@ -110,7 +112,10 @@ def audio_graph(plan, cleanup):
                 filters += "adeclick=w=55:o=75:a=2:t=2:b=2:m=a,"
             filters += f"afade=t=in:ss=0:ns=576,afade=t=out:ss={samples - 1200}:ns=1200,adelay={start}S:all=1,apad=whole_len={total},atrim=end_sample={total}"
         else:
-            filters = f"atrim=start_sample={offset}:end_sample={offset + total},asetpts=PTS-STARTPTS,volume=0"
+            # Selected native room tone/foley is already source-reviewed. Never
+            # erase it merely because this is a non-speaking performance.
+            gain = 0 if item.get("mute_non_dialogue") is True else 1
+            filters = f"atrim=start_sample={offset}:end_sample={offset + total},asetpts=PTS-STARTPTS,volume={gain}"
         graph += f"[s{i}]{filters}[a{i}];"
         offset += total
     graph += (
