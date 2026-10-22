@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from datetime import datetime
 import json
 import math
 import os
+from zoneinfo import ZoneInfo
 import re
 import subprocess
 import sqlite3
@@ -23,6 +25,9 @@ from typing import Any, Callable
 
 from app.utils import utils
 from app.services import studio_cinema as cinema
+from app.services.studio_efficiency import VerifiedDecodeCache
+
+_technical_decode_cache = VerifiedDecodeCache()
 
 PHASES = (
     "research",
@@ -70,6 +75,10 @@ def digest_file(path: str | Path) -> str:
 
 
 def sample_decode_video(path: str | Path) -> tuple[bool, str]:
+    return _technical_decode_cache.check(path, _sample_decode_video)
+
+
+def _sample_decode_video(path: str | Path) -> tuple[bool, str]:
     """Decode a first and final video frame with the bundled MoviePy FFmpeg."""
     try:
         import imageio_ffmpeg
@@ -144,7 +153,10 @@ def snapshot_job_config(
     from app.services.cost_router_overrides import apply_new_job_overrides
 
     source = base_config if base_config is not None else config.app
-    path = Path(utils.root_dir()) / "cost-router-overrides.json"
+    path = Path(
+        os.environ.get("STORY_STUDIO_COST_OVERRIDES_PATH")
+        or Path(utils.root_dir()) / "cost-router-overrides.json"
+    )
     snapshot = apply_new_job_overrides(dict(source), path)
     snapshot["_cost_router_job_id"] = str(job_id)
     return snapshot
@@ -289,7 +301,19 @@ def load_director_profile(
     )
     if profile_id not in (None, resolved_id):
         raise ValueError("requested private profile identifier does not match")
-    cinema.policy_for(profile)  # Reject invalid numeric contracts at intake.
+    policy = cinema.policy_for(profile)  # Reject invalid contracts at intake.
+    if profile.get("mandatory_cinema") is True and not policy:
+        raise ValueError("this channel requires the enabled cinema acceptance contract")
+    if profile.get("mandatory_cinema") is True and (
+        not learning_path
+        or not profile.get("template_revision")
+        or template.get("template_revision") != profile["template_revision"]
+        or learning.get("active_template_revision") != profile["template_revision"]
+        or profile.get("required_cinema_contract_version") != cinema.CONTRACT_VERSION
+    ):
+        raise ValueError(
+            "mandatory channel template, applied learning and cinema implementation must match"
+        )
     return {
         **profile,
         "profile_sha256": _digest_bytes(combined.encode("utf-8")),
@@ -313,6 +337,8 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "story_values",
             "editorial_policy",
             "packaging_defaults",
+            "search_policy",
+            "engagement_policy",
             "brand_hashtag",
             "brand_hashtags",
             "director_template",
@@ -321,6 +347,10 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "media_delivery",
             "caption_policy",
             "cinema_policy",
+            "mandatory_cinema",
+            "required_cinema_contract_version",
+            "production_attribution",
+            "efficiency_policy",
             "template_revision",
             "production_build",
             "learning_rules",
@@ -491,7 +521,8 @@ class StudioStore:
     def _initialize(self) -> None:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS stories (
                     story_id TEXT PRIMARY KEY, title TEXT NOT NULL, request_json TEXT NOT NULL,
                     requested_duration_seconds INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -540,7 +571,8 @@ class StudioStore:
                     metrics_json TEXT NOT NULL, cost_json TEXT NOT NULL
                 );
                 PRAGMA user_version = 1;
-            """)
+            """
+            )
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(source_evidence)")
             }
@@ -664,9 +696,9 @@ class StudioStore:
         result["phases"] = {
             phase["phase"]: {
                 **dict(phase),
-                "output": json.loads(phase["output_json"])
-                if phase["output_json"]
-                else None,
+                "output": (
+                    json.loads(phase["output_json"]) if phase["output_json"] else None
+                ),
             }
             for phase in phases
         }
@@ -1003,9 +1035,7 @@ class StudioStore:
             archive_kind = (
                 "imported_caption"
                 if kind == "caption_track"
-                else "imported_media"
-                if kind in {"master", "localized_media"}
-                else kind
+                else "imported_media" if kind in {"master", "localized_media"} else kind
             )
             archive = _archive_media_path(
                 self,
@@ -1139,6 +1169,39 @@ class StudioStore:
             raise ValueError(
                 "accept the two-character dialogue pilot before bulk production receipts"
             )
+        if policy:
+            # Reuse a previously imported source without inventing a historical
+            # pre-submit observation. New sources require a complete readback.
+            # A local derivative can inherit a known original's submission, but
+            # never its creative approval; native finishing/A/V gates still run.
+            original_hash = receipt.get("native_original_source_sha256")
+            with self.connect() as conn:
+                cached = conn.execute(
+                    "SELECT asset_path,asset_sha256 FROM flow_receipts WHERE story_id=? AND shot_id=? AND prompt_sha256=? AND asset_sha256 IN (?,?) ORDER BY imported_at DESC LIMIT 1",
+                    (
+                        story_id,
+                        shot_id,
+                        prompt_hash,
+                        actual_hash,
+                        str(original_hash or ""),
+                    ),
+                ).fetchone()
+            known_source = bool(
+                cached
+                and Path(cached["asset_path"]).is_file()
+                and digest_file(Path(cached["asset_path"])) == cached["asset_sha256"]
+            )
+            if not known_source:
+                from app.services.studio_provider_preflight import attestation_issues
+
+                issues = attestation_issues(
+                    receipt.get("submission_attestation"),
+                    shot,
+                    story_id=story_id,
+                    storyboard_sha256=current_board["sha256"],
+                )
+                if issues:
+                    raise ValueError("; ".join(issues))
         expected = {
             item["shot_id"]: item["prompt_sha256"] for item in manifest.get("shots", [])
         }
@@ -1472,12 +1535,179 @@ def _require_current_cinema_profile(store: StudioStore, story_id: str) -> None:
         )
 
 
+def finishing_review_template(store: StudioStore, story_id: str, master_path) -> dict:
+    """Prepare an UNPASSED checklist; only actual review may fill its verdicts."""
+    from app.services import studio_finishing as finishing
+    from app.services.studio_captions import find_localized_variant
+
+    policy, board = _cinema_context(store, story_id)
+    master = Path(master_path or "")
+    variant = (
+        find_localized_variant(store, story_id, master) if master.is_file() else {}
+    )
+    offset, boundaries = 0, []
+    for shot in (board or {}).get("document", {}).get("shots", []):
+        end = offset + shot["duration_seconds"]
+        boundaries.append(
+            {
+                "shot_id": shot["shot_id"],
+                "start_seconds": offset,
+                "end_seconds": end,
+                "opening_pass": False,
+                "ending_pass": False,
+                "join_pass": False,
+                "unintended_speech_absent": False,
+                "clicks_and_truncation_absent": False,
+                "observed_boundary_detail": "",
+            }
+        )
+        offset = end
+    return {
+        "contract_version": finishing.VERSION,
+        "status": "pending_actual_review",
+        "story_id": story_id,
+        "master_sha256": digest_file(master) if master.is_file() else None,
+        "caption_sha256": (variant or {}).get("caption_sha256"),
+        "storyboard_sha256": (board or {}).get("sha256"),
+        "policy_sha256": cinema.digest(policy),
+        "locale": store.story(story_id)["request"]
+        .get("audience", {})
+        .get("language", "en"),
+        "method": "actual_complete_movie_audio_video",
+        "media_access_confirmed": False,
+        "reviewer": "",
+        "reviewer_kind": "",
+        "limitations": "",
+        "checks": {key: False for key in finishing.CHECKS},
+        "unresolved_issues": [
+            "Actual final-film and boundary review not yet performed"
+        ],
+        "evidence_files": [],
+        "observations": [],
+        "boundary_reviews": boundaries,
+    }
+
+
+def _finishing_issues(store, story_id, master_path, review):
+    from app.services import studio_finishing as finishing
+    from app.services.studio_captions import find_localized_variant, parse_caption_file
+
+    policy, board = _cinema_context(store, story_id)
+    if not policy:
+        return []
+    master = Path(master_path or "")
+    if not master.is_file():
+        return ["finishing:actual_final_movie_required"]
+    duration = video_duration_seconds(master)
+    variant = find_localized_variant(store, story_id, master)
+    locale = store.story(story_id)["request"].get("audience", {}).get("language", "en")
+    issues = finishing.review_issues(
+        review,
+        story_id=story_id,
+        master_sha256=digest_file(master),
+        caption_sha256=(variant or {}).get("caption_sha256"),
+        board=(board or {}).get("document", {}),
+        storyboard_sha256=(board or {}).get("sha256"),
+        policy_sha256=cinema.digest(policy),
+        locale=locale,
+        duration_seconds=duration,
+    )
+    if not variant:
+        return issues + ["finishing:current_localized_captions_required"]
+    try:
+        parsed = parse_caption_file(variant["caption_path"], duration_seconds=duration)
+        spoken = " ".join(
+            shot.get("dialogue", {}).get("text", "")
+            for shot in (board or {}).get("document", {}).get("shots", [])
+        )
+        issues.extend(
+            finishing.caption_issues(
+                parsed["cues"], locale=locale, expected_text=spoken
+            )
+        )
+    except (ValueError, OSError, TypeError) as exc:
+        issues.append(f"finishing:captions_invalid:{exc}")
+    return issues
+
+
+def _publication_metadata(request, metadata):
+    """Carry reviewed creative metadata into the exact hash-bound package.
+
+    Only creative fields are accepted; this cannot supply QA, rights, audience
+    approvals or switch an account. Missing overrides retain generic defaults.
+    """
+    fields = {
+        "platform_titles",
+        "platform_descriptions",
+        "keywords",
+        "topics",
+        "chapters",
+        "search_brief",
+    }
+    if metadata is not None and (
+        not isinstance(metadata, dict) or set(metadata) - fields
+    ):
+        raise ValueError("publication metadata contains unsupported fields")
+    result = {key: request[key] for key in fields if key in request}
+    result.update(metadata or {})
+    for key, value in result.items():
+        if key == "search_brief":
+            if not isinstance(value, dict) or set(value) - {
+                "primary_query",
+                "episode_query",
+                "aliases",
+            }:
+                raise ValueError(
+                    "search_brief requires primary_query, episode_query and optional aliases"
+                )
+        elif key.startswith("platform_"):
+            if not isinstance(value, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) or not v.strip()
+                for k, v in value.items()
+            ):
+                raise ValueError(f"{key} requires platform-to-text mappings")
+        elif not isinstance(value, list):
+            raise ValueError(f"{key} requires a list")
+        elif key != "chapters" and any(
+            not isinstance(v, str) or not v.strip() for v in value
+        ):
+            raise ValueError(f"{key} requires nonempty text items")
+    return result
+
+
+def _retired_recipe_receipts(store, story_id, expected, actual):
+    """Recognize removed shots only through their saved historical recipe hashes.
+
+    Never delete history or excuse a missing/changed current shot. Unknown extra
+    receipt IDs remain a mismatch; only genuinely earlier recipes establish scope.
+    """
+    extras = set(actual) - set(expected)
+    if not extras:
+        return []
+    with store.connect() as conn:
+        recipes = conn.execute(
+            "SELECT document_json FROM artifacts WHERE story_id=? AND kind='flow_bundle'",
+            (story_id,),
+        ).fetchall()
+    known = set()
+    for item in recipes:
+        document = json.loads(item["document_json"] or "{}")
+        for shot in document.get("shots", []):
+            known.add((shot.get("shot_id"), shot.get("prompt_sha256")))
+    return sorted(
+        shot_id
+        for shot_id in extras
+        if (shot_id, actual[shot_id]["prompt_sha256"]) in known
+    )
+
+
 def quality_report(
     store: StudioStore, story_id: str, *, master_path: str | Path | None = None
 ) -> dict[str, Any]:
     from app.services.studio_captions import find_localized_variant
 
     issues = []
+    retired_receipts = []
     evidence = store.evidence(story_id)
     if store.phase(story_id, "flow")["status"] != "complete":
         issues.append("manual_flow_receipts_incomplete")
@@ -1502,7 +1732,13 @@ def quality_report(
             issues.append(
                 f"needs_research: evidence confidence unresolved for {row['source']}"
             )
-        if row["rights_status"] not in {
+        reference_only = (
+            row.get("category") == "research_plot_comparison"
+            and row["rights_status"] == "reference_only_not_reused"
+            and bool(str(row.get("claim") or "").strip())
+            and bool(str(row.get("notes") or "").strip())
+        )
+        if not reference_only and row["rights_status"] not in {
             "original",
             "licensed",
             "public_domain",
@@ -1557,6 +1793,14 @@ def quality_report(
                 storyboard_sha256=cinema_board.get("sha256", ""),
             )
         )
+        issues.extend(
+            _finishing_issues(
+                store,
+                story_id,
+                master_path,
+                ((review or {}).get("document") or {}).get("finishing_review"),
+            )
+        )
     if current_master_sha is None:
         issues.append("current_master_file_missing")
     else:
@@ -1609,8 +1853,13 @@ def quality_report(
         actual = {
             row["shot_id"]: row for row in store._flow_receipt_fingerprints(story_id)
         }
-        if set(expected) != set(actual) or any(
-            actual[key]["prompt_sha256"] != expected[key] for key in expected
+        retired_receipts = _retired_recipe_receipts(store, story_id, expected, actual)
+        active = {
+            key: value for key, value in actual.items() if key not in retired_receipts
+        }
+        if set(expected) != set(active) or any(
+            key not in active or active[key]["prompt_sha256"] != expected[key]
+            for key in expected
         ):
             issues.append("flow_receipts_do_not_match_current_bundle")
         for row in store.flow_receipts(story_id):
@@ -1662,6 +1911,7 @@ def quality_report(
         "passed": status == "passed",
         "issues": issues,
         "evidence_count": len(evidence),
+        "retired_recipe_receipt_ids": retired_receipts,
         "script_sha256": script_sha,
         "screenplay_sha256": screenplay["sha256"] if screenplay else None,
         "storyboard_sha256": storyboard["sha256"] if storyboard else None,
@@ -1670,6 +1920,7 @@ def quality_report(
         "duration_verified": measured_duration is not None,
         "audience": story["request"].get("audience", {}),
         "cinema_policy": policy,
+        "finishing_requirements": policy.get("finishing_contract", {}),
         "production_version": versions,
         "review_required": [
             "age fit",
@@ -1725,6 +1976,7 @@ def import_quality_review(
         raise ValueError(
             "QA report needs a named reviewer and passing decode, visual, and audio checks"
         )
+    _require_current_cinema_profile(store, story_id)
     policy, board = _cinema_context(store, story_id)
     if policy:
         issues = cinema.performance_review_issues(
@@ -1736,6 +1988,9 @@ def import_quality_review(
         )
         issues.extend(
             cinema.duration_issues(video_duration_seconds(master), policy, "master")
+        )
+        issues.extend(
+            _finishing_issues(store, story_id, master, report.get("finishing_review"))
         )
         if issues:
             raise ValueError("; ".join(issues))
@@ -1780,6 +2035,7 @@ def build_platform_package(
     captions_path: str | Path | None = None,
     platforms: tuple[str, ...] | None = None,
     human_review: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Draft platform assets using the shared generic growth service; no publishing."""
     from app.services.studio_growth import DEFAULT_PLATFORMS, package_story
@@ -1788,6 +2044,16 @@ def build_platform_package(
     story = store.story(story_id)
     profile = _story_profile(story["request"])
     packaging_defaults = profile.get("packaging_defaults") or {}
+    prepared_metadata = _publication_metadata(story["request"], metadata)
+    attribution = profile.get("production_attribution") or {}
+    if attribution.get("required") is True and (
+        not attribution.get("credit_line")
+        or not attribution.get("required_hashtags")
+        or not attribution.get("search_keywords")
+    ):
+        raise ValueError(
+            "Required production attribution needs its credit line, brand hashtags and search keywords"
+        )
     master = Path(master_path).expanduser().resolve()
     master_artifact = store.add_artifact(
         story_id,
@@ -1917,9 +2183,31 @@ def build_platform_package(
         "duration_seconds": qa_doc.get("duration_seconds"),
         "duration_verified": qa_doc.get("duration_verified") is True,
         "packaging_defaults": _prompt_safe_profile_value(packaging_defaults),
+        "search_policy": _prompt_safe_profile_value(profile.get("search_policy") or {}),
+        "engagement_policy": _prompt_safe_profile_value(
+            profile.get("engagement_policy") or {}
+        ),
         "ai_realistic_content": (human_review or {}).get("ai_realistic_content"),
         "platform_targets": list(selected_platforms),
         "platform_assets": platform_assets,
+        "cinema_metadata_required": bool(cinema.policy_for(profile)),
+        "production_credit_line": attribution.get("credit_line", ""),
+        "required_brand_hashtags": attribution.get("required_hashtags", []),
+        "producer_keywords": attribution.get("search_keywords", []),
+        "copyright_required": attribution.get("copyright_required") is True,
+        "rights_owner": attribution.get("rights_owner", ""),
+        "first_publication_year": int(
+            str(
+                story["request"].get("first_publication_year")
+                or datetime.fromtimestamp(
+                    story["created_at"],
+                    ZoneInfo(
+                        (profile.get("media_delivery") or {}).get("timezone", "UTC")
+                    ),
+                ).year
+            )
+        ),
+        **prepared_metadata,
     }
     package = package_story(facts, platforms=selected_platforms, approval=None)
     store.add_artifact(
@@ -2056,9 +2344,9 @@ def request_screenplay_draft(
                 "action": "observable character decisions and physical performance",
             }
         )
-        prompt["output_contract"]["scenes"][0]["lines"][0]["line_id"] = (
-            "unique stable line id"
-        )
+        prompt["output_contract"]["scenes"][0]["lines"][0][
+            "line_id"
+        ] = "unique stable line id"
         prompt["constraints"].extend(
             [
                 "Write a film performed by characters. The narrator must not deliver character dialogue or explain every visible action.",
@@ -2068,7 +2356,9 @@ def request_screenplay_draft(
             ]
         )
     snapshot = snapshot_job_config(story_id, app_config)
-    prompt_text = json.dumps(prompt, ensure_ascii=False)
+    from app.services.studio_efficiency import cache_friendly_prompt
+
+    prompt_text = cache_friendly_prompt(prompt)
     creative_phase = store.run_phase(
         story_id,
         "creative",
@@ -2392,7 +2682,9 @@ def request_storyboard_draft(
                 "Reserve a two-character dialogue pilot before bulk spending. Cheap silent video is not a fallback for failed dialogue. Keep generation prompts compact and reuse approved actor/set references.",
             ]
         )
-    prompt_text = json.dumps(prompt, ensure_ascii=False)
+    from app.services.studio_efficiency import cache_friendly_prompt
+
+    prompt_text = cache_friendly_prompt(prompt)
     snapshot = snapshot_job_config(story_id, app_config)
     inputs = {
         "screenplay_sha256": screenplay_artifact["sha256"],
@@ -2472,6 +2764,9 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             raise ValueError("cinema preproduction rejected: " + "; ".join(issues))
     pilots = cinema.pilot_ids(board["document"]) if policy else []
     pilot_accepted = _pilot_passed(store, story_id)
+    from app.services.studio_efficiency import saved_take
+
+    saved_receipts = store.flow_receipts(story_id)
     for asset in profile.get("approved_assets", []):
         asset_path = Path(str(asset.get("path", "")))
         if not asset_path.is_file() or digest_file(asset_path) != asset.get("sha256"):
@@ -2516,6 +2811,7 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         # director treatment/camera/lighting/weather/props/audio/transition
         # fields, while stripping local absolute paths and credential-like data.
         exported_shot = _prompt_safe_profile_value(shot)
+        reuse = saved_take(shot, saved_receipts)
         bundle_shots.append(
             {
                 **exported_shot,
@@ -2537,7 +2833,10 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
                 "handoff": "manual_browser_only",
                 "generation_allowed": shot.get("new_generation_required", True)
                 is not False
+                and reuse["generation_allowed"]
                 and (not policy or pilot_accepted or shot["shot_id"] in pilots),
+                "reuse": reuse,
+                "max_outputs_per_request": 1,
             }
         )
     bundle = {
@@ -2560,6 +2859,43 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
         "approved_reference_assets": list(archived_assets.values()),
         "shots": bundle_shots,
         "provider_account_check_required": "hold_without_retry_or_account_switch",
+        "submission_acceptance": {
+            "required": True,
+            "exact_composer_text_readback_required": True,
+            "actor_reference_and_saved_voice_binding_required": True,
+            "native_audio_and_one_output_quote_required": True,
+            "new_receipt_requires_submission_attestation": bool(policy),
+            "cached_sources_reused_without_fabricated_historical_preflight": True,
+            "reserve_credit_before_generate": True,
+            "one_click_per_reserved_attempt": True,
+            "uncertain_acknowledgement": "hold_reserved_attempt_without_retry",
+            "retained_prompt_proves_failure": False,
+            "virtualized_gallery_absence_proves_failure": False,
+            "retry_requires": "Inspect the provider's saved jobs and reconcile the reserved attempt. A missing click acknowledgement, retained composer or current gallery viewport cannot establish non-submission.",
+            "runtime_boundary": "External manual/browser handoff; Studio cannot observe unrecorded provider clicks or guarantee a provider billing cap.",
+        },
+        "review_capture_acceptance": {
+            "required": True,
+            "complete_json_parse_required": True,
+            "exact_ordered_shot_coverage_required": True,
+            "partial_visible_response_is_final": False,
+            "retry_requires": "Read the complete rendered response before deciding it is truncated. Preserve the raw response and verify every required row. UI virtualization alone is not a model failure or reason to rerun a paid review.",
+        },
+        "efficiency": {
+            "saved_matching_takes": sum(
+                s["reuse"]["status"] == "saved_take_available_review_still_required"
+                for s in bundle_shots
+            ),
+            "new_requests_currently_allowed": sum(
+                s["generation_allowed"] for s in bundle_shots
+            ),
+            "duplicate_requests_blocked": True,
+            "native_voice_and_timing_preserved": True,
+            "cost_basis": "Flow credits per output; shorter prompts alone do not establish credit savings",
+            "new_generation_credit_cost": None,
+            "cost_status": "requires_current_account_UI_quote",
+            "quality_gates_unchanged": True,
+        },
         "receipt_schema": {
             "shot_id": "",
             "prompt_sha256": "",
@@ -3205,9 +3541,11 @@ def _cli() -> int:
             args.source_file,
             source=args.source,
             metrics=json.loads(Path(args.metrics_json).read_text(encoding="utf-8")),
-            cost=json.loads(Path(args.cost_json).read_text(encoding="utf-8"))
-            if args.cost_json
-            else None,
+            cost=(
+                json.loads(Path(args.cost_json).read_text(encoding="utf-8"))
+                if args.cost_json
+                else None
+            ),
         )
     elif args.command == "experiment-plan":
         result = six_episode_experiment_plan(

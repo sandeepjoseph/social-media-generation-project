@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "2.1.0"
+CONTRACT_VERSION = "3.2.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",
@@ -43,6 +43,30 @@ def finite_number(value: Any) -> bool:
     )
 
 
+def sync_observation_issues(observations: Any, duration: float) -> list[str]:
+    """Reject malformed actual-review timings before an expensive render.
+
+    Legacy string/range timestamps need explicit evidence-preserving curation;
+    an automatic conversion here would conceal provenance or invent precision.
+    """
+    if not isinstance(observations, list) or len(observations) < 3:
+        return ["sync_observations_required"]
+    issues, times = [], []
+    for observation in observations:
+        if (
+            not isinstance(observation, dict)
+            or not finite_number(observation.get("seconds"))
+            or not 0 <= observation["seconds"] <= duration
+            or not str(observation.get("visible_and_audible_event", "")).strip()
+        ):
+            issues.append("invalid_sync_observation")
+        else:
+            times.append(observation["seconds"])
+    if len(set(times)) < 3:
+        issues.append("distinct_sync_observations_required")
+    return sorted(set(issues))
+
+
 def policy_for(profile: dict) -> dict:
     configured = profile.get("cinema_policy") or {}
     if configured.get("enabled") is not True:
@@ -65,6 +89,13 @@ def policy_for(profile: dict) -> dict:
         raise ValueError("invalid cinema duration or character policy")
     if policy["mode"] != "dialogue_led_film":
         raise ValueError("unsupported cinema performance mode")
+    from app.services.studio_finishing import contract
+
+    policy["provider_submission_preflight_required"] = True
+
+    # Enabling cinema enables its release contract. An omitted/false private
+    # override cannot quietly turn the learned finishing requirements off.
+    policy["finishing_contract"] = contract()
     return policy
 
 
@@ -76,11 +107,29 @@ def implementation_identity(repo: Path) -> dict:
         "webui/pages/2_Director_Studio.py",
         "app/services/studio_native_movie.py",
         "app/services/studio_native_media.py",
+        "app/services/studio_provider_preflight.py",
+        "app/services/studio_caption_readability.py",
+        "app/services/studio_captions.py",
+        "app/services/studio_finishing.py",
+        "app/services/studio_growth.py",
+        "app/services/studio_discovery.py",
+        "app/services/studio_engagement.py",
+        "app/services/media_delivery.py",
+        "app/services/flow_cost_router.py",
+        "app/services/cost_router.py",
+        "app/services/cost_router_overrides.py",
+        "app/services/studio_efficiency.py",
+        "app/services/studio_native_finish.py",
+        "app/services/studio_channel_setup.py",
+        "app/config/config.py",
+        "app/utils/utils.py",
     )
     hashes = {
-        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
-        if (repo / name).is_file()
-        else "missing"
+        name: (
+            hashlib.sha256((repo / name).read_bytes()).hexdigest()
+            if (repo / name).is_file()
+            else "missing"
+        )
         for name in files
     }
     try:
@@ -202,6 +251,10 @@ def storyboard_issues(board: dict, screenplay: dict, policy: dict) -> list[str]:
             "costume_state",
             "continuity",
             "transition",
+            "story_clock",
+            "sound_cues",
+            "prop_state_before",
+            "prop_state_after",
         ):
             if not shot.get(field):
                 issues.append(f"cinema:{sid}:{field}_required")
@@ -372,6 +425,8 @@ def performance_review_issues(
             issues.append(f"cinema:{sid}:performance_media_hash_mismatch")
         if r.get("performance_pass") is not True:
             issues.append(f"cinema:{sid}:acting_not_reviewed")
+        if r.get("unintended_speech_absent") is not True:
+            issues.append(f"cinema:{sid}:unintended_speech_not_reviewed")
         if shot.get("speech_mode") == "native_dialogue":
             if not all(
                 r.get(k) is True
@@ -381,26 +436,16 @@ def performance_review_issues(
                     "lip_sync_pass",
                     "original_av_timing_preserved",
                     "voice_consistency_pass",
+                    "complete_sentence_and_rest_pass",
                 )
             ):
                 issues.append(f"cinema:{sid}:dialogue_or_lip_sync_unverified")
             if r.get("review_method") != "full_utterance_normal_and_half_speed":
                 issues.append(f"cinema:{sid}:full_utterance_av_review_required")
-            observations = r.get("sync_observations", [])
-            if not isinstance(observations, list) or len(observations) < 3:
-                issues.append(f"cinema:{sid}:sync_observations_required")
-            else:
-                times = []
-                for o in observations:
-                    if (
-                        not isinstance(o, dict)
-                        or not finite_number(o.get("seconds"))
-                        or not 0 <= o["seconds"] <= shot["duration_seconds"]
-                        or not str(o.get("visible_and_audible_event", "")).strip()
-                    ):
-                        issues.append(f"cinema:{sid}:invalid_sync_observation")
-                    else:
-                        times.append(o["seconds"])
-                if len(set(times)) < 3:
-                    issues.append(f"cinema:{sid}:distinct_sync_observations_required")
+            issues.extend(
+                f"cinema:{sid}:{issue}"
+                for issue in sync_observation_issues(
+                    r.get("sync_observations"), shot["duration_seconds"]
+                )
+            )
     return sorted(set(issues))

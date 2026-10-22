@@ -1,6 +1,7 @@
 """Local director-led workflow page. Every provider action is an explicit click."""
 
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,12 +27,15 @@ from app.services.story_studio import (
     refresh_story_profile,
     record_learning_rule,
     import_performance_pilot_review,
+    finishing_review_template,
 )
 from app.services.studio_cinema import policy_for
+from app.services.studio_discovery import search_observation
 from app.services.studio_native_movie import build_native_movie
+from app.services.studio_native_finish import finish_saved_timeline
+from app.services.studio_channel_setup import initialize_channel
 from app.services.studio_captions import register_localized_variant
 from app.utils import utils
-
 
 st.set_page_config(page_title="Director Studio", page_icon="🎬", layout="wide")
 st.title("Director Studio")
@@ -76,6 +80,65 @@ if active_cinema:
 st.caption(
     f"Creative profile: {active_profile['profile_id']} · snapshot {active_profile['profile_sha256'][:12]} · {active_profile['profile_visibility']}"
 )
+if active_profile.get("production_attribution"):
+    with st.expander("Company credits, copyright and category defaults"):
+        st.json(active_profile["production_attribution"])
+        st.json(
+            (active_profile.get("packaging_defaults") or {}).get(
+                "platform_categories", {}
+            )
+        )
+        st.caption(
+            "Credits are inserted into every prepared description. Copyright applies to owner-declared original production elements to the extent protected; asset/source licences, audience and AI reviews are separate release gates. Category labels must be available in the current platform."
+        )
+
+with st.expander("Search and engagement defaults"):
+    st.json(
+        {
+            "search_policy": active_profile.get("search_policy", {}),
+            "engagement_policy": active_profile.get("engagement_policy", {}),
+        }
+    )
+    st.caption(
+        "Story relevance is checked before handoff; indexing and ranking need actual observations. Enable comments/publication notifications only where permitted. YouTube Made for Kids videos cannot enable either; viewer alert preferences remain their own."
+    )
+
+with st.expander("Set up a separate channel or another laptop"):
+    st.caption(
+        "Copies reusable production rules and credits into fresh private state. Connect that channel's own accounts and credentials after launch. Existing productions are not changed."
+    )
+    with st.form("separate_channel_setup"):
+        channel_slug = st.text_input("New channel ID", placeholder="my-new-channel")
+        channel_label = st.text_input("New channel name")
+        channel_root = st.text_input(
+            "New private channel folder",
+            value=str(Path.home() / "StoryStudioChannels" / "new-channel"),
+        )
+        channel_owner = st.text_input(
+            "Rights owner for original production elements",
+            value=(active_profile.get("production_attribution") or {}).get(
+                "rights_owner", ""
+            ),
+        )
+        if st.form_submit_button("Create isolated channel setup"):
+            try:
+                initialized = initialize_channel(
+                    channel_root,
+                    channel_id=channel_slug,
+                    channel_name=channel_label,
+                    source_profile=os.environ.get("STORY_STUDIO_PROFILE_PATH"),
+                    rights_owner=channel_owner or None,
+                )
+                st.success(
+                    "Fresh channel setup saved. No accounts, credentials, approvals or media were copied."
+                )
+                st.json(initialized)
+                st.code(
+                    f'python -m app.services.studio_channel_setup launch --root "{initialized["channel_root"]}" --port 8512',
+                    language="bash",
+                )
+            except Exception as exc:
+                st.error(str(exc))
 
 with st.expander("Start one story", expanded=not bool(store.list_stories())):
     with st.form("new_story"):
@@ -130,9 +193,7 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
             intended_index = (
                 1
                 if intended_made_for_kids is True
-                else 2
-                if intended_made_for_kids is False
-                else 0
+                else 2 if intended_made_for_kids is False else 0
             )
             made_for_kids_choice = st.selectbox(
                 "Intended child-directed setting",
@@ -179,9 +240,7 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
                 audience_intent = (
                     True
                     if made_for_kids_choice == "Yes"
-                    else False
-                    if made_for_kids_choice == "No"
-                    else None
+                    else False if made_for_kids_choice == "No" else None
                 )
                 result = store.create_story(
                     {
@@ -315,9 +374,9 @@ with tab_creative:
                         "lines": [
                             {
                                 "line_id": "line-01",
-                                "role_id": "character-a"
-                                if active_cinema
-                                else "narrator",
+                                "role_id": (
+                                    "character-a" if active_cinema else "narrator"
+                                ),
                                 "text": "",
                                 "delivery": "",
                             }
@@ -437,6 +496,67 @@ with tab_flow:
     st.caption(
         "Receipts must bind the exported shot prompt hash and the exact imported asset hash. Unknown billing stays unknown. Account security warnings require a human hold and are never auto-retried."
     )
+    current_bundle = store.latest_artifact(story_id, "flow_bundle")
+    if current_bundle:
+        from app.services.studio_provider_preflight import attest_submission
+
+        st.subheader("Provider composer preflight")
+        st.caption(
+            "Enter observations from the actual provider UI after staging the shot. "
+            "The complete prompt, actor, references, voice, native audio and one-output quote must match. "
+            "This check does not submit generation or approve acting."
+        )
+        preflight_shots = current_bundle["document"]["shots"]
+        selected_preflight = st.selectbox(
+            "Staged shot",
+            [shot["shot_id"] for shot in preflight_shots],
+            key="preflight_shot",
+        )
+        actual_observation = st.text_area(
+            "Actual provider observation JSON", value="{}", key="provider_observation"
+        )
+        preflight_key = f"provider_preflight:{story_id}"
+        if st.button("Validate observed composer"):
+            try:
+                if profile_status(store, story_id)["needs_replan"]:
+                    raise ValueError(
+                        "Refresh and replan the changed production template first"
+                    )
+                selected = next(
+                    s for s in preflight_shots if s["shot_id"] == selected_preflight
+                )
+                attestation = attest_submission(
+                    selected,
+                    json.loads(actual_observation),
+                    story_id=story_id,
+                    storyboard_sha256=current_bundle["document"]["storyboard_sha256"],
+                )
+                store.add_artifact(
+                    story_id, "provider_submission_preflight", document=attestation
+                )
+                st.session_state[preflight_key] = {
+                    "observation": actual_observation,
+                    "bundle": current_bundle["sha256"],
+                    "shot_id": selected_preflight,
+                    "attestation": attestation,
+                }
+                st.success(
+                    "Composer matches. Reserve its quoted cost separately before one Generate activation."
+                )
+            except Exception as exc:
+                st.error(str(exc))
+        validated = st.session_state.get(preflight_key, {})
+        if (
+            validated.get("observation") == actual_observation
+            and validated.get("bundle") == current_bundle["sha256"]
+            and validated.get("shot_id") == selected_preflight
+        ):
+            st.download_button(
+                "Download submission attestation",
+                json.dumps(validated["attestation"], ensure_ascii=False, indent=2),
+                file_name=f"{story_id}-{selected_preflight}-submission-attestation.json",
+                mime="application/json",
+            )
     receipt_file = st.file_uploader(
         "Import a Flow receipt JSON", type=["json"], key="flow_receipt"
     )
@@ -483,6 +603,21 @@ with tab_qa:
                 "Music rights evidence file (final mix)",
                 key=f"native_rights_{story_id}",
             )
+            st.caption(
+                "For caption/sound changes, reuse an existing verified native timeline to avoid another scene assembly or provider generation."
+            )
+            native_saved_record = st.text_input(
+                "Saved native timeline receipt (optional)",
+                key=f"native_saved_record_{story_id}",
+            )
+            native_saved_plan = st.text_input(
+                "Its original selection plan (optional)",
+                key=f"native_saved_plan_{story_id}",
+            )
+            native_cleanup = st.text_input(
+                "Source-evidenced audio cleanup JSON (optional)",
+                key=f"native_cleanup_{story_id}",
+            )
             if st.button(
                 "Build movie for review",
                 disabled=not all([native_board, native_selection, native_output]),
@@ -522,20 +657,47 @@ with tab_qa:
                             "speech_mode"
                         ) == "native_dialogue" and receipts.get(
                             entry["shot_id"], {}
-                        ).get("asset_sha256") != entry.get("sha256"):
+                        ).get(
+                            "asset_sha256"
+                        ) != entry.get(
+                            "sha256"
+                        ):
                             raise ValueError(
                                 "Import the exact reviewed native performance receipt before assembly"
                             )
                     with st.spinner("Assembling reviewed scenes and matching captions"):
-                        result = build_native_movie(
-                            native_board,
-                            native_selection,
-                            native_output,
-                            review_cut=native_review,
-                            music=native_music or None,
-                            music_rights=native_rights or None,
-                            caption_font=native_font,
-                        )
+                        if native_saved_record:
+                            if not all(
+                                [native_saved_plan, native_music, native_rights]
+                            ):
+                                raise ValueError(
+                                    "Saved-timeline finishing requires the original plan and music rights"
+                                )
+                            result = finish_saved_timeline(
+                                native_board,
+                                native_selection,
+                                native_saved_record,
+                                native_saved_plan,
+                                native_output,
+                                music_path=native_music,
+                                music_rights_path=native_rights,
+                                caption_font=native_font,
+                                cleanup=(
+                                    json.loads(Path(native_cleanup).read_text())
+                                    if native_cleanup
+                                    else {}
+                                ),
+                            )
+                        else:
+                            result = build_native_movie(
+                                native_board,
+                                native_selection,
+                                native_output,
+                                review_cut=native_review,
+                                music=native_music or None,
+                                music_rights=native_rights or None,
+                                caption_font=native_font,
+                            )
                     delivery = []
                     for media in [result["master"], result["source_native_master"]]:
                         artifact = store.add_artifact(
@@ -638,11 +800,15 @@ with tab_qa:
                     fluent_reviewer=master_caption_reviewer,
                     voice_record={
                         "locale": master_audio_locale,
-                        "status": "not_used"
-                        if master_voice_status == "not_used"
-                        else "reviewed"
-                        if master_voice_status == "reviewed"
-                        else "needs_review",
+                        "status": (
+                            "not_used"
+                            if master_voice_status == "not_used"
+                            else (
+                                "reviewed"
+                                if master_voice_status == "reviewed"
+                                else "needs_review"
+                            )
+                        ),
                         "voice_id": master_voice_id or None,
                         "provider": master_voice_provider,
                         "reviewer": master_voice_reviewer,
@@ -658,6 +824,24 @@ with tab_qa:
                     registered["media_artifact"]["provenance"].get(
                         "delivery_archive", {}
                     )
+                )
+            except Exception as exc:
+                st.error(str(exc))
+    if active_cinema and qa_master:
+        st.caption(
+            "Mandatory final-film review: actual audio/video, every scene boundary, pleasant music, acting, continuity, readable captions and a complete ending. Label AI review and sampling limits honestly."
+        )
+        if st.button("Prepare unpassed finishing checklist"):
+            try:
+                checklist = finishing_review_template(store, story_id, qa_master)
+                st.download_button(
+                    "Download finishing review template",
+                    json.dumps(checklist, indent=2),
+                    file_name="finishing-review.pending.json",
+                    mime="application/json",
+                )
+                st.info(
+                    "Fill from actual final-film review and preserve evidence files. Include as finishing_review in the QA JSON; this template is not an approval."
                 )
             except Exception as exc:
                 st.error(str(exc))
@@ -799,11 +983,15 @@ with tab_assets:
                         fluent_reviewer=caption_reviewer,
                         voice_record={
                             "locale": audio_locale,
-                            "status": "not_used"
-                            if voice_status == "not_used"
-                            else "reviewed"
-                            if voice_status == "reviewed"
-                            else "needs_review",
+                            "status": (
+                                "not_used"
+                                if voice_status == "not_used"
+                                else (
+                                    "reviewed"
+                                    if voice_status == "reviewed"
+                                    else "needs_review"
+                                )
+                            ),
                             "voice_id": voice_id or None,
                             "provider": voice_provider,
                             "reviewer": voice_reviewer,
@@ -817,6 +1005,12 @@ with tab_assets:
                     )
                 except Exception as exc:
                     st.error(str(exc))
+    prepared_metadata_json = st.text_area(
+        "Prepared publication metadata (JSON)",
+        value="{}",
+        key=f"metadata_{story_id}",
+        help='Optional overrides: platform_titles, platform_descriptions, topics, keywords, chapters and search_brief. Example search_brief: {"primary_query": "main subject", "episode_query": "specific story phrase", "aliases": []}. Phrases must match the story or its configured spelling aliases. Cinema releases require prepared titles/descriptions for each selected platform. These become part of the exact approved package.',
+    )
     if st.button("Draft platform metadata", disabled=not bool(master)):
         try:
             package = build_platform_package(
@@ -824,16 +1018,17 @@ with tab_assets:
                 story_id,
                 master_path=master,
                 platforms=tuple(targets),
+                metadata=json.loads(prepared_metadata_json),
                 human_review={
                     "audience_reviewed": audience_reviewed,
-                    "made_for_kids_reviewed": True
-                    if made_for_kids_reviewed == "Yes"
-                    else False
-                    if made_for_kids_reviewed == "No"
-                    else None,
-                    "ai_realistic_content": None
-                    if ai_reviewed == "Needs review"
-                    else ai_reviewed,
+                    "made_for_kids_reviewed": (
+                        True
+                        if made_for_kids_reviewed == "Yes"
+                        else False if made_for_kids_reviewed == "No" else None
+                    ),
+                    "ai_realistic_content": (
+                        None if ai_reviewed == "Needs review" else ai_reviewed
+                    ),
                     "platform_assets": platform_assets,
                 },
             )
@@ -847,6 +1042,62 @@ with tab_assets:
     if current_package:
         package_doc = current_package["document"]
         st.caption(f"Package SHA-256: {package_doc.get('package_sha256')}")
+        with st.expander("YouTube search readiness and observed visibility"):
+            st.caption(
+                "Searchability and ranking are separate. These local checks make no provider calls and cannot force indexing. New uploads or edits can take a few days to appear."
+            )
+            for platform, item in package_doc.get("platforms", {}).items():
+                discovery = item.get("search_readiness")
+                if not discovery:
+                    continue
+                st.write(platform)
+                st.json(discovery)
+                st.link_button(
+                    "Test story search in YouTube", discovery["search_test_url"]
+                )
+                st.download_button(
+                    "Download search checklist",
+                    json.dumps(discovery, indent=2, ensure_ascii=False),
+                    file_name=f"{story_id}_{platform}_search-readiness.json",
+                    mime="application/json",
+                    key=f"search-download-{platform}",
+                )
+                observation_text = st.text_area(
+                    "Actual search observation (JSON)",
+                    value="{}",
+                    key=f"search-observation-{story_id}-{platform}",
+                    help="Record video_id, metadata_sha256 above, observed_at with timezone, query, context (sign-in/region/browser), evidence_reference, found and result_urls. Do not include account screenshots or credentials in the media archive.",
+                )
+                if st.button(
+                    "Save observed search result", key=f"save-search-{platform}"
+                ):
+                    try:
+                        observation = search_observation(
+                            discovery, json.loads(observation_text)
+                        )
+                        store.add_artifact(
+                            story_id,
+                            "search_observation",
+                            document={"platform": platform, **observation},
+                            provenance={
+                                "package_sha256": package_doc["package_sha256"]
+                            },
+                        )
+                        st.success(
+                            "Observed result saved separately from publication and creative approval."
+                        )
+                    except Exception as exc:
+                        st.error(str(exc))
+        with st.expander("Comments and publication notifications"):
+            st.caption(
+                "Defaults request comments and subscriber notifications where permitted. YouTube Made for Kids videos cannot enable either. Viewers control their own alerts; metadata preparation does not change live settings."
+            )
+            st.json(
+                {
+                    p: item.get("engagement_controls")
+                    for p, item in package_doc.get("platforms", {}).items()
+                }
+            )
         if package_doc.get("readiness", {}).get("required_checks_passed"):
             reviewer = st.text_input("Owner / reviewer name for local approval")
             if st.button("Approve exact package for manual handoff"):

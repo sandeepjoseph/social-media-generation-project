@@ -21,7 +21,14 @@ def selection(tmp_path):
     plan = {"locale": "en", "shots": []}
     recipes, decisions = [], []
     evidence, evidence_sha = document(
-        tmp_path / "review.json", {"method": "test fixture"}
+        tmp_path / "review.json",
+        {
+            "method": "test fixture",
+            "shots": [
+                {"shot_id": f"shot-{i}", "heard_words": "Shall we try this together?"}
+                for i in range(60)
+            ],
+        },
     )
     for i in range(60):
         sid = f"shot-{i}"
@@ -46,6 +53,13 @@ def selection(tmp_path):
                 "source_review_sha256": evidence_sha,
                 "curator_component_pass": True,
                 "review_method": "full_utterance_normal_and_half_speed",
+                "sync_observations": [
+                    {
+                        "seconds": t,
+                        "visible_and_audible_event": f"Fixture observed event {t}",
+                    }
+                    for t in (0.5, 2.5, 4.5)
+                ],
                 "source_submitted_prompt_sha256": prompt_sha,
             }
         )
@@ -103,6 +117,40 @@ def test_review_cut_allows_pending_sequence_but_never_skips_component_checks(sel
     )
 
 
+@pytest.mark.parametrize("bad", ["0.5", "0.5-1.0", True, float("nan"), -1, 7])
+def test_invalid_component_observations_block_before_render(selection, bad):
+    board, plan, _, _ = selection
+    from pathlib import Path
+
+    path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(path.read_text())
+    decisions["shots"][0]["sync_observations"][0]["seconds"] = bad
+    _, digest = document(path, decisions)
+    for entry in plan["shots"]:
+        entry["component_review_sha256"] = digest
+    assert any(
+        "invalid_sync_observation" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_duplicate_component_observation_times_block_before_render(selection):
+    board, plan, _, _ = selection
+    from pathlib import Path
+
+    path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(path.read_text())
+    for observation in decisions["shots"][0]["sync_observations"]:
+        observation["seconds"] = 1
+    _, digest = document(path, decisions)
+    for entry in plan["shots"]:
+        entry["component_review_sha256"] = digest
+    assert any(
+        "distinct_sync_observations_required" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
 @pytest.mark.parametrize(
     "change, expected",
     [
@@ -144,6 +192,29 @@ def test_tampered_source_or_review_is_held(selection):
     )
 
 
+def test_false_positive_curator_cannot_approve_another_shots_words(selection):
+    from pathlib import Path
+
+    board, plan, _, _ = selection
+    decision_path = Path(plan["shots"][0]["component_review_path"])
+    decisions = json.loads(decision_path.read_text())
+    evidence_path = Path(decisions["shots"][0]["source_review"])
+    evidence = json.loads(evidence_path.read_text())
+    evidence["shots"][0][
+        "heard_words"
+    ] = "A different character speaks a different sentence."
+    _, evidence_sha = document(evidence_path, evidence)
+    for row in decisions["shots"]:
+        row["source_review_sha256"] = evidence_sha
+    _, decision_sha = document(decision_path, decisions)
+    for row in plan["shots"]:
+        row["component_review_sha256"] = decision_sha
+    assert any(
+        "words contradict" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
 def test_a_new_slot_cannot_repeat_the_same_original_frames(selection):
     board, plan, _, _ = selection
     plan["shots"][1]["source_intervals"] = copy.deepcopy(
@@ -152,6 +223,42 @@ def test_a_new_slot_cannot_repeat_the_same_original_frames(selection):
     assert any(
         "Repeated original footage" in x
         for x in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_silent_reaction_cannot_cover_a_broken_native_speaking_take(selection):
+    board, plan, _, _ = selection
+    entry = plan["shots"][0]
+    original = copy.deepcopy(entry["source_intervals"][0])
+    reaction = copy.deepcopy(plan["shots"][1]["source_intervals"][0])
+    original["end_frame"] = 120
+    reaction.update(start_frame=0, end_frame=24)
+    entry["source_intervals"] = [original, reaction]
+    assert any(
+        "one continuous original A/V source" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_splicing_restarted_words_from_one_take_still_requires_reshoot(selection):
+    board, plan, _, _ = selection
+    original = plan["shots"][0]["source_intervals"][0]
+    plan["shots"][0]["source_intervals"] = [
+        {**original, "end_frame": 60},
+        {**original, "start_frame": 72},
+    ]
+    assert any(
+        "one continuous original A/V source" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
+    )
+
+
+def test_native_source_interval_cannot_hide_picture_clock_mismatch(selection):
+    board, plan, _, _ = selection
+    plan["shots"][0]["source_intervals"][0]["end_frame"] = 145
+    assert any(
+        "original frame clock" in issue
+        for issue in movie.validate_plan(board, plan, require_sequence_review=False)
     )
 
 
@@ -341,3 +448,132 @@ def test_mixed_length_and_audio_layouts_keep_native_frame_and_pcm_timing(tmp_pat
         assert samples == 120000
     with pytest.raises(FileExistsError):
         movie.render_sequence(entries, target)
+
+
+def native_cache_fixture(tmp_path, plan):
+    source = tmp_path / "prior-native.mkv"
+    source.write_bytes(b"fixture-native-clock-and-audio")
+    record = {
+        "media_plan_digest": movie.media_plan_digest(plan),
+        "storyboard_sha256": plan["storyboard_file_sha256"],
+        "duration_seconds": sum(s["duration_seconds"] for s in plan["shots"]),
+        "native_voice_replaced": False,
+        "retiming": False,
+        "loops_or_still_padding": False,
+        "source_native_master": {"path": str(source), "sha256": movie.sha(source)},
+    }
+    path = tmp_path / "prior-render.json"
+    document(path, record)
+    return path, source, record
+
+
+def test_exact_native_cache_is_decoded_and_hash_verified(selection, monkeypatch):
+    from app.services import studio_native_media
+
+    _, plan, tmp, _ = selection
+    record, source, _ = native_cache_fixture(tmp, plan)
+    calls = []
+
+    def decode(path, *, expected_frames):
+        calls.append((path, expected_frames))
+        return {"technical_pass": True, "has_source_audio": True}, {}
+
+    monkeypatch.setattr(studio_native_media, "decode_video", decode)
+    target = tmp / "new-native.mkv"
+    assert movie.reuse_native_render(plan, record, target)["technical_pass"]
+    assert calls == [(source, 8640)]
+    assert movie.sha(target) == movie.sha(source)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("media_plan_digest", "wrong"),
+        ("storyboard_sha256", "wrong"),
+        ("duration_seconds", 361),
+        ("native_voice_replaced", True),
+        ("retiming", True),
+        ("loops_or_still_padding", True),
+    ],
+)
+def test_stale_or_altered_native_cache_is_rejected(selection, key, value):
+    _, plan, tmp, _ = selection
+    record, _, doc = native_cache_fixture(tmp, plan)
+    doc[key] = value
+    document(record, doc)
+    with pytest.raises(ValueError, match="exact unchanged media plan"):
+        movie.reuse_native_render(plan, record, tmp / "new.mkv")
+    assert not (tmp / "new.mkv").exists()
+
+
+def test_changed_native_cache_bytes_are_rejected(selection):
+    _, plan, tmp, _ = selection
+    record, source, _ = native_cache_fixture(tmp, plan)
+    source.write_bytes(b"changed cached movie")
+    with pytest.raises(ValueError, match="missing or changed"):
+        movie.reuse_native_render(plan, record, tmp / "new.mkv")
+
+
+def test_native_cache_cannot_skip_whole_sequence_review(selection, monkeypatch):
+    board, plan, tmp, board_path = selection
+    plan_path = tmp / "plan.json"
+    document(plan_path, plan)
+
+    def forbidden(*args):
+        raise AssertionError("cache was reached before required whole-movie gate")
+
+    monkeypatch.setattr(movie, "reuse_native_render", forbidden)
+    with pytest.raises(ValueError, match="whole-sequence audiovisual review"):
+        movie.build_native_movie(
+            board_path,
+            plan_path,
+            tmp / "final.mp4",
+            native_render_cache=tmp / "prior.json",
+        )
+
+
+def test_native_sequence_preparation_keeps_all_component_gates(selection, monkeypatch):
+    board, plan, tmp, board_path = selection
+    plan["shots"][0]["component_review_pass"] = False
+    path = tmp / "held-plan.json"
+    document(path, plan)
+
+    def forbidden(*args):
+        raise AssertionError("Unreviewed component reached native render")
+
+    monkeypatch.setattr(movie, "render_sequence", forbidden)
+    with pytest.raises(ValueError, match="Unreviewed moving component"):
+        movie.prepare_native_sequence(board_path, path, tmp / "native.mkv")
+
+
+def test_native_sequence_is_explicitly_only_an_unapproved_candidate(
+    selection, monkeypatch
+):
+    board, plan, tmp, board_path = selection
+    path = tmp / "plan.json"
+    document(path, plan)
+
+    def render(entries, target):
+        target.write_bytes(b"fixture native PCM timeline")
+        return {"technical_pass": True, "fully_decoded_frames": 8640, "fps": 24}
+
+    monkeypatch.setattr(movie, "render_sequence", render)
+    out = tmp / "native.mkv"
+    result = movie.prepare_native_sequence(board_path, path, out)
+    assert result["native_sequence_only"] is True
+    assert result["publication_allowed"] is False
+    assert result["human_review_claim"] is False
+    assert "pending_actual_complete" in result["status"]
+    assert result["source_native_master"]["sha256"] == movie.sha(out)
+    assert result["media_plan_digest"] == movie.media_plan_digest(plan)
+    assert len(result["captions"]) == 2
+    with pytest.raises(FileExistsError):
+        movie.prepare_native_sequence(board_path, path, out)
+
+
+def test_native_pcm_sequence_requires_explicit_container(selection):
+    _, plan, tmp, board_path = selection
+    path = tmp / "plan.json"
+    document(path, plan)
+    with pytest.raises(ValueError, match="must use .mkv"):
+        movie.prepare_native_sequence(board_path, path, tmp / "mistaken-final.mp4")

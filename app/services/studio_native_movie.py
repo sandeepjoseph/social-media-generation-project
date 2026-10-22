@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import math
+import shutil
 import textwrap
 
 
@@ -110,7 +111,7 @@ def reviewed_caption_cues(entry, *, locale="en"):
     return result
 
 
-def validate_plan(board, plan, *, require_sequence_review=True):
+def validate_plan(board, plan, *, require_sequence_review=True, check_readability=True):
     issues = []
     readability = plan.get("caption_readability")
     if isinstance(readability, dict) and readability.get("held"):
@@ -123,6 +124,8 @@ def validate_plan(board, plan, *, require_sequence_review=True):
         issues.append("Current hash-bound Flow bundle is required")
     else:
         bundle = json.loads(bundle_path.read_text())
+        if bundle.get("story_id") and plan.get("story_id") != bundle["story_id"]:
+            issues.append("Selected plan must bind its own independent story ID")
         if bundle.get("storyboard_sha256") != plan.get("storyboard_artifact_sha256"):
             issues.append("Flow bundle and selected storyboard binding differ")
     locale = plan.get("locale")
@@ -143,6 +146,7 @@ def validate_plan(board, plan, *, require_sequence_review=True):
     total = 0
     origins = []
     for entry in plan.get("shots", []):
+        source_review_document = {}
         slot = next(
             (s for s in board["shots"] if s["shot_id"] == entry["shot_id"]), None
         )
@@ -197,11 +201,38 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                 issues.append(
                     "Original audiovisual/context review evidence is missing or changed"
                 )
+            else:
+                try:
+                    source_review_document = json.loads(source_review.read_text())
+                except (ValueError, UnicodeError):
+                    issues.append("Original audiovisual review is not valid JSON")
         intervals = entry.get("source_intervals", [])
         if not intervals:
             issues.append(
                 "Original frame-interval provenance required: " + entry["shot_id"]
             )
+        if slot["speech_mode"] == "native_dialogue":
+            if len(intervals) != 1:
+                issues.append(
+                    "Native speaking single requires one continuous original A/V source; reshoot repeated dialogue instead of covering it with a silent actor: "
+                    + entry["shot_id"]
+                )
+            else:
+                first, last = (
+                    intervals[0].get("start_frame"),
+                    intervals[0].get("end_frame"),
+                )
+                if (
+                    isinstance(first, bool)
+                    or isinstance(last, bool)
+                    or not isinstance(first, int)
+                    or not isinstance(last, int)
+                    or last - first != round(frames)
+                ):
+                    issues.append(
+                        "Native speaking single must retain its original frame clock: "
+                        + entry["shot_id"]
+                    )
         for interval in intervals:
             key = interval.get("source_sha256")
             original = Path(interval.get("source_path", ""))
@@ -226,6 +257,17 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                 )
             origins.append((key, start, end))
         if slot["speech_mode"] == "native_dialogue":
+            from app.services.studio_review_words import review_word_issues
+
+            issues.extend(
+                f"Native source review {entry['shot_id']}: {issue}"
+                for issue in review_word_issues(
+                    slot["dialogue"]["text"],
+                    source_review_document,
+                    entry["shot_id"],
+                    locale=locale,
+                )
+            )
             recipe = next(
                 (
                     s
@@ -240,6 +282,14 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                 != "full_utterance_normal_and_half_speed"
             ):
                 issues.append("Source-bound native performance approval required")
+            from app.services.studio_cinema import sync_observation_issues
+
+            issues.extend(
+                f"Native source review {entry['shot_id']}: {issue}"
+                for issue in sync_observation_issues(
+                    decision.get("sync_observations"), duration
+                )
+            )
             if not recipe or decision.get(
                 "source_submitted_prompt_sha256"
             ) != recipe.get("prompt_sha256"):
@@ -269,7 +319,25 @@ def validate_plan(board, plan, *, require_sequence_review=True):
                     "Actual reviewed caption interval required: " + entry["shot_id"]
                 )
             try:
-                reviewed_caption_cues(entry, locale=locale)
+                cues = reviewed_caption_cues(entry, locale=locale)
+                if check_readability:
+                    from app.services.studio_finishing import caption_issues
+
+                    issues.extend(
+                        caption_issues(
+                            [
+                                {
+                                    "start_seconds": a,
+                                    "end_seconds": b,
+                                    "text": text,
+                                    "lines": text.splitlines(),
+                                }
+                                for a, b, text in cues
+                            ],
+                            locale=locale,
+                            expected_text=entry["dialogue"],
+                        )
+                    )
             except (ValueError, TypeError, KeyError) as exc:
                 issues.append(f"Invalid reviewed captions: {entry['shot_id']}: {exc}")
         elif decision.get("context_pass") is not True:
@@ -413,6 +481,97 @@ def render_sequence(entries, target):
     return technical
 
 
+def reuse_native_render(plan, record_path, target):
+    """Reuse only the exact reviewed-plan concat; this grants no creative pass."""
+    from app.services.studio_native_media import decode_video
+
+    record_path, target = Path(record_path), Path(target)
+    record = json.loads(record_path.read_text())
+    duration = sum(s["duration_seconds"] for s in plan["shots"])
+    if (
+        record.get("media_plan_digest") != media_plan_digest(plan)
+        or record.get("storyboard_sha256") != plan["storyboard_file_sha256"]
+        or record.get("duration_seconds") != duration
+        or record.get("native_voice_replaced") is not False
+        or record.get("retiming") is not False
+        or record.get("loops_or_still_padding") is not False
+    ):
+        raise ValueError(
+            "Native render cache must bind this exact unchanged media plan"
+        )
+    source = Path((record.get("source_native_master") or {}).get("path", ""))
+    expected_sha = (record.get("source_native_master") or {}).get("sha256")
+    if not source.is_file() or not expected_sha or sha(source) != expected_sha:
+        raise ValueError("Native render cache is missing or changed")
+    if target.exists():
+        raise FileExistsError("Preserve the prior native master version")
+    technical, _ = decode_video(source, expected_frames=round(duration * 24))
+    if not technical["technical_pass"] or not technical["has_source_audio"]:
+        raise ValueError("Native render cache failed its actual frame/audio check")
+    temporary = target.with_suffix(target.suffix + ".partial")
+    if temporary.exists():
+        raise FileExistsError("Preserve the incomplete cache-copy evidence")
+    shutil.copyfile(source, temporary)
+    if sha(temporary) != expected_sha:
+        raise ValueError("Native render cache copy changed")
+    temporary.replace(target)
+    return technical
+
+
+def prepare_native_sequence(board_path, selection_path, output):
+    """Build a review-only native PCM timeline for the canonical finisher.
+
+    This avoids a redundant unscored HD encode. All component gates apply;
+    the scored movie still requires actual complete-film/boundary review.
+    """
+    board_path, selection_path, output = map(Path, (board_path, selection_path, output))
+    if output.suffix.lower() != ".mkv":
+        raise ValueError("Native PCM sequence output must use .mkv")
+    board, plan = json.loads(board_path.read_text()), json.loads(
+        selection_path.read_text()
+    )
+    plan["current_storyboard_file_sha256"] = sha(board_path)
+    issues = validate_plan(board, plan, require_sequence_review=False)
+    if issues:
+        raise ValueError("; ".join(issues))
+    caption_target = output.with_name(output.stem + "_Captions." + plan["locale"])
+    for path in [
+        output,
+        output.with_suffix(".json"),
+        Path(str(caption_target) + ".srt"),
+        Path(str(caption_target) + ".vtt"),
+    ]:
+        if path.exists():
+            raise FileExistsError("Preserve the prior native sequence version")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    technical = render_sequence(plan["shots"], output)
+    captions = write_captions(plan["shots"], caption_target, locale=plan["locale"])
+    native = {"path": str(output.resolve()), "sha256": sha(output)}
+    record = {
+        "status": "pending_actual_complete_scored_movie_av_review",
+        "publication_allowed": False,
+        "human_review_claim": False,
+        "native_sequence_only": True,
+        "review_cut": True,
+        "native_voice_replaced": False,
+        "retiming": False,
+        "loops_or_still_padding": False,
+        "duration_seconds": sum(s["duration_seconds"] for s in plan["shots"]),
+        "locale": plan["locale"],
+        "media_plan_digest": media_plan_digest(plan),
+        "selection_path": str(selection_path.resolve()),
+        "selection_sha256": sha(selection_path),
+        "storyboard_sha256": sha(board_path),
+        "master": native,
+        "source_native_master": native,
+        "native_technical": technical,
+        "captions": [{"path": str(p.resolve()), "sha256": sha(p)} for p in captions],
+        "limits": "Native timeline preparation is not whole-film, sound, caption or publication approval. Use the canonical finisher, then actual final-film and every-boundary review.",
+    }
+    output.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def build_native_movie(
     board_path,
     selection_path,
@@ -422,6 +581,7 @@ def build_native_movie(
     music=None,
     music_rights=None,
     caption_font="Arial",
+    native_render_cache=None,
 ):
     """Local assembly. Review cuts precede sequence QA; exports never grant release."""
     board_path, selection_path, output = map(Path, (board_path, selection_path, output))
@@ -469,7 +629,11 @@ def build_native_movie(
     ]:
         if existing.exists():
             raise FileExistsError(existing)
-    technical = render_sequence(plan["shots"], raw)
+    technical = (
+        reuse_native_render(plan, native_render_cache, raw)
+        if native_render_cache
+        else render_sequence(plan["shots"], raw)
+    )
     srt, vtt = write_captions(
         plan["shots"],
         caption_target,
@@ -542,12 +706,22 @@ def build_native_movie(
         "locale": plan["locale"],
         "media_plan_digest": media_plan_digest(plan),
         "selection_sha256": sha(selection_path),
+        "selection_path": str(selection_path.resolve()),
         "storyboard_sha256": sha(board_path),
         "master": {"path": str(output.resolve()), "sha256": sha(output)},
         "source_native_master": {"path": str(raw.resolve()), "sha256": sha(raw)},
         "captions": [{"path": str(p.resolve()), "sha256": sha(p)} for p in [srt, vtt]],
         "music_rights_sha256": sha(music_rights) if rights else None,
         "native_technical": technical,
+        "native_render_cache": (
+            {
+                "path": str(Path(native_render_cache).resolve()),
+                "sha256": sha(native_render_cache),
+                "technical_reuse_only_not_creative_approval": True,
+            }
+            if native_render_cache
+            else None
+        ),
         "final_technical": final,
         "limits": "Encoding, loudness, and spatial conforming do not establish performance, lip timing, continuity or whole-film editorial approval.",
     }
@@ -561,15 +735,42 @@ def main():
     parser.add_argument("selection", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--review-cut", action="store_true")
+    parser.add_argument(
+        "--prepare-native-sequence",
+        action="store_true",
+        help="Prepare only a gated native PCM .mkv and captions for the canonical finisher; never approval",
+    )
     parser.add_argument("--music", type=Path)
     parser.add_argument("--music-rights", type=Path)
     parser.add_argument("--caption-font", default="Arial")
+    parser.add_argument(
+        "--native-render-cache",
+        type=Path,
+        help="Reuse an exact prior canonical render record; all current review gates still apply",
+    )
     parser.add_argument(
         "--prepare-readable-captions",
         action="store_true",
         help="Write a new English caption-plan JSON candidate; do not render or approve",
     )
     args = parser.parse_args()
+    if args.prepare_native_sequence:
+        if (
+            args.review_cut
+            or args.music
+            or args.music_rights
+            or args.native_render_cache
+        ):
+            parser.error(
+                "native sequence preparation cannot also request a final/review render or cache"
+            )
+        print(
+            json.dumps(
+                prepare_native_sequence(args.board, args.selection, args.output),
+                indent=2,
+            )
+        )
+        return
     if args.prepare_readable_captions:
         from app.services.studio_caption_readability import prepare_caption_plan
 
@@ -598,6 +799,7 @@ def main():
         music=args.music,
         music_rights=args.music_rights,
         caption_font=args.caption_font,
+        native_render_cache=args.native_render_cache,
     )
     print(json.dumps(record, indent=2))
 

@@ -11,8 +11,106 @@ from app.services.studio_growth import (
 )
 
 
+def test_copyright_and_category_survive_every_platform_override(tmp_path):
+    facts = _facts(tmp_path)
+    facts.update(
+        {
+            "rights_owner": "Example Inc.",
+            "first_publication_year": 2026,
+            "copyright_required": True,
+            "platform_descriptions": {
+                p: "A fair promise. #old" for p in DEFAULT_PLATFORMS
+            },
+            "packaging_defaults": {
+                "platform_categories": {
+                    "rumble": {"primary": "Entertainment", "secondary": "Education"}
+                }
+            },
+        }
+    )
+    package = package_story(facts)
+    for item in package["platforms"].values():
+        assert "© 2026 Example Inc." in item["description"]
+        assert (
+            "Underlying folklore and third-party materials retain their respective rights."
+            in item["description"]
+        )
+        assert item["copyright"]["first_publication_year"] == 2026
+    assert package["platforms"]["rumble"]["category"]["primary"] == "Entertainment"
+    assert (
+        package["platforms"]["rumble"]["category"]["status"]
+        == "suggested_verify_in_current_platform"
+    )
+    assert package["required_approval"]["copyright_credit_present"] is True
+    facts["source_evidence"] = []
+    assert (
+        package_story(facts)["required_approval"]["source_and_music_rights_resolved"]
+        is False
+    )
+
+
+def test_copyright_change_invalidates_exact_package_approval(tmp_path):
+    facts = _facts(tmp_path)
+    facts.update({"rights_owner": "Example Inc.", "first_publication_year": 2025})
+    package = package_story(facts)
+    facts["first_publication_year"] = 2026
+    changed = package_story(
+        facts,
+        approval={
+            "master_sha256": package["master"]["sha256"],
+            "package_sha256": package["package_sha256"],
+        },
+    )
+    assert changed["approval"]["verified_for_exact_master_and_package"] is False
+    facts["first_publication_year"] = True
+    with pytest.raises(ValueError, match="first-publication year"):
+        package_story(facts)
+
+
 def _asset(path):
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def test_required_search_preflight_holds_unrelated_copy_and_revokes_approval(tmp_path):
+    facts = _facts(tmp_path)
+    facts["search_policy"] = {"required": True}
+    package = package_story(facts, platforms=("youtube_long",))
+    assert package["required_approval"]["youtube_search_readiness"] is True
+    assert (
+        package["platforms"]["youtube_long"]["search_readiness"]["index_status"]
+        == "not_observed"
+    )
+    approval = {
+        "master_sha256": package["master"]["sha256"],
+        "package_sha256": package["package_sha256"],
+    }
+    facts["platform_descriptions"] = {"youtube_long": "Watch our wonderful channel."}
+    changed = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert changed["required_approval"]["youtube_search_readiness"] is False
+    assert changed["readiness"]["required_checks_passed"] is False
+    assert changed["approval"]["verified_for_exact_master_and_package"] is False
+
+
+def test_search_optimization_keeps_corporate_rights_footer(tmp_path):
+    facts = _facts(tmp_path)
+    facts.update(
+        search_policy={"required": True},
+        production_credit_line="Built by Example Media.",
+        rights_owner="Example Inc.",
+        first_publication_year=2026,
+    )
+    package = package_story(facts, platforms=("youtube_long",))
+    description = package["platforms"]["youtube_long"]["description"]
+    assert description.startswith("The Potter's Promise:")
+    assert "Built by Example Media." in description
+    assert "© 2026 Example Inc." in description
+    facts["platform_titles"] = {"youtube_long": "x" * 101}
+    assert (
+        package_story(facts, platforms=("youtube_long",))["required_approval"][
+            "platform_metadata_within_limits"
+        ]
+        is False
+    )
 
 
 def _facts(tmp_path):
@@ -138,6 +236,33 @@ def test_package_is_truthful_and_uses_documented_platform_limits(tmp_path):
     )
     assert package["approval"]["status"] == "approval_required"
     assert package["readiness"]["ready_for_publication"] is False
+
+
+def test_cinema_metadata_must_be_prepared_and_changes_revoke_exact_package_approval(
+    tmp_path,
+):
+    facts = _facts(tmp_path)
+    facts["cinema_metadata_required"] = True
+    pending = package_story(facts, platforms=("youtube_long",))
+    assert pending["required_approval"]["prepared_platform_metadata"] is False
+    assert pending["readiness"]["required_checks_passed"] is False
+    facts.update(
+        platform_titles={"youtube_long": "Will the potter keep his promise?"},
+        platform_descriptions={
+            "youtube_long": "A potter learns to ask a neighbor for help. #Promise"
+        },
+    )
+    prepared = package_story(facts, platforms=("youtube_long",))
+    assert prepared["required_approval"]["prepared_platform_metadata"] is True
+    approval = {
+        "master_sha256": facts["master"]["sha256"],
+        "package_sha256": prepared["package_sha256"],
+    }
+    approved = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert approved["approval"]["verified_for_exact_master_and_package"] is True
+    facts["platform_titles"]["youtube_long"] = "How can a neighbor help?"
+    changed = package_story(facts, platforms=("youtube_long",), approval=approval)
+    assert changed["approval"]["verified_for_exact_master_and_package"] is False
 
 
 def test_explicit_brand_tag_precedes_four_story_supported_topics(tmp_path):
@@ -524,4 +649,36 @@ def test_no_verified_duration_means_youtube_chapters_are_omitted(tmp_path):
     assert any(
         "verified video duration" in item
         for item in package["platforms"]["youtube_long"]["review_queue"]
+    )
+
+
+def test_required_producer_credit_survives_overrides_and_is_searchable(tmp_path):
+    facts = _facts(tmp_path)
+    credit = "Custom AI pipeline by Example Media Labs, an initiative of Example Inc."
+    facts.update(
+        production_credit_line=credit,
+        required_brand_hashtags=[
+            "ExampleStories",
+            "ExampleMediaLabs",
+            "ExampleAILabs",
+            "ExampleInc",
+        ],
+        producer_keywords=["Example Media Labs", "Example AI Labs", "Example Inc."],
+        platform_descriptions={"youtube_long": "A potter keeps a promise. #OldTag"},
+    )
+    package = package_story(facts, platforms=("youtube_long", "facebook_reels"))
+    for platform in package["platforms"].values():
+        assert platform["description"].count(credit) == 1
+        assert len(platform["hashtags"]) == 5
+        assert "#ExampleMediaLabs" in platform["description"]
+        assert "#OldTag" not in platform["description"]
+        assert "Example Media Labs" in platform["keywords"]
+    assert package["required_approval"]["production_attribution_present"] is True
+    oldhash = package["package_sha256"]
+    facts["production_credit_line"] += " Made with care."
+    assert (
+        package_story(facts, platforms=("youtube_long", "facebook_reels"))[
+            "package_sha256"
+        ]
+        != oldhash
     )

@@ -27,7 +27,9 @@ def prepare_caption_plan(board, plan, *, chars_per_second=16, minimum_seconds=2)
         raise ValueError(
             "Localized captions require fluent-reviewed line breaks and timing"
         )
-    issues = movie.validate_plan(board, plan, require_sequence_review=False)
+    issues = movie.validate_plan(
+        board, plan, require_sequence_review=False, check_readability=False
+    )
     if issues:
         raise ValueError("; ".join(issues))
     result = copy.deepcopy(plan)
@@ -113,7 +115,12 @@ def prepare_caption_plan(board, plan, *, chars_per_second=16, minimum_seconds=2)
         "shot_retimed": False,
     }
     remaining = movie.validate_plan(board, result, require_sequence_review=False)
-    assert remaining == (
-        ["Caption readability requires explicit editorial replanning"] if held else []
+    # A held proposal is retained for explicit replanning, never rendered. The
+    # render path always checks actual card durations again, even if a caller
+    # deletes the proposal's cached held list.
+    assert (
+        not remaining
+        if not held
+        else "Caption readability requires explicit editorial replanning" in remaining
     )
     return result

@@ -1,3 +1,5 @@
+> **Customized fork:** This is the inherited upstream guide. For the current Director Studio movie workflow, products, architecture and setup, read [README.md](README.md). Upstream provider/automation listings do not establish configured production capabilities.
+
 <div align="center">
 
 # MoneyPrinterTurbo 💸
@@ -603,4 +605,4 @@ Click to view the [`LICENSE`](LICENSE) file
 Use [revision-aware local projects](docs/video-projects.md) to replace prepared scene media, compare revisions and rebuild only affected stages. The opt-in CLI preserves verified artifacts and the last successful export; it makes no provider calls or automatic posts.
 # Director-led story workflow
 
-The additive **Director Studio** page is available from the Streamlit pages menu. It stores resumable projects in local SQLite, keeps research/manual browser work explicit, routes optional screenplay/storyboard drafting through the existing provider config, requires hash-bound voice and fluent-reviewed captions matching each localized audio variant, and prepares platform metadata without publishing. See [`docs/director-studio.md`](docs/director-studio.md), [`docs/media-delivery.md`](docs/media-delivery.md), and [`examples/story-request.example.json`](examples/story-request.example.json).
+The additive **Director Studio** page is available from the Streamlit pages menu. It stores resumable projects in local SQLite, keeps research/manual browser work explicit, routes optional screenplay/storyboard drafting through the existing provider config, requires hash-bound voice and fluent-reviewed captions matching each localized audio variant, and prepares platform metadata without publishing. See [`docs/new-channel-setup.md`](docs/new-channel-setup.md) for isolated new-laptop/channel setup, [`docs/director-studio.md`](docs/director-studio.md), [`docs/media-delivery.md`](docs/media-delivery.md), and [`examples/story-request.example.json`](examples/story-request.example.json).

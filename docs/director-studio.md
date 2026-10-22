@@ -49,7 +49,7 @@ The workflow map is `request → research evidence → screenplay → storyboard
 
 External profiles can enable the built-in `cinema_policy` with `{"enabled": true}`.
 This is an opt-in feature layered onto the existing workflow; generic video jobs
-and historical imports retain their contracts. Contract version 2 defaults to a
+and historical imports retain their contracts. Contract version 3 defaults to a
 360–480 second full episode, two speaking characters, no more than 20% narrator
 words, at least 55% native-dialogue shot time and 75% character performance time.
 These are production defaults, not a scientific claim about an ideal attention
@@ -112,6 +112,33 @@ python -m app.services.story_studio import-performance-pilot STORY_ID pilot-revi
 python -m app.services.story_studio record-learning --criterion acting --text "Keep listening reactions motivated" --status applied
 ```
 
+## Provider composer preflight
+
+Before one reserved provider activation, observe the entire actual composer text,
+selected reference asset hashes, visible role, saved voice, native audio, duration,
+output count, model and live credit quote. Read the composer after replacement:
+some contenteditable controls retain old text. A substring match is insufficient.
+Reusing ingredients does not imply the next shot has the same actor or props.
+
+Create an observation JSON with `shot_id`, `prompt_text`, `reference_sha256`
+(a list), `visible_speaker_id`, `voice_id` (null for non-speaking action),
+`native_audio: true`, `output_count: 1`, `duration_seconds`, `model`,
+`quoted_credits`, and `observed_by`. These must be actual observations, not values
+blindly copied from the desired recipe. Then run:
+
+```sh
+python -m app.services.studio_provider_preflight bundle.json SHOT_ID observation.json --out attestation.json
+```
+
+Keep the credit reservation separate, activate Generate once, and attach the
+resulting document as `submission_attestation` in the downloaded take's receipt.
+Fresh cinema sources are rejected without a current, unchanged attestation.
+Already imported exact source hashes need no fabricated historical observation.
+A local derivative may identify an imported original with
+`native_original_source_sha256`; this inherits submission provenance, never a
+performance pass. Word accuracy and preflight do not establish lip synchronization.
+Every original or edited source still needs the required actual A/V review.
+
 ## Reviewed native movie assembly
 
 The Quality tab assembles an explicit reviewed selection of moving clips.
@@ -166,3 +193,203 @@ per second. It never changes words, source clips, voice timing or shot duration.
 Insufficient existing time is recorded as a hold for explicit editorial replanning.
 The new candidate revokes sequence approval and still needs actual caption and
 whole-movie review. Other languages require fluent-reviewed line breaks and timing.
+
+## Mandatory cinema finishing (contract 3)
+
+Once a profile enables cinema, the finishing contract is mandatory. A channel
+can additionally set `mandatory_cinema: true`; its profile then fails to load if
+cinema is disabled. Mandatory channel profiles also require a matching director-template revision, applied-learning revision and `required_cinema_contract_version: "3.2.0"`; missing or mismatched files fail closed. Generic upstream jobs remain unaffected. Production build
+identity includes caption, finishing and growth implementations, so changes
+hold frozen cinema jobs for explicit replan and revoke downstream approvals
+through the existing refresh operation. Historical uploads are never repaired
+or reapproved by changing a template.
+
+Before generation, the board must specify the story clock, weather, lighting,
+camera, eyeline, physical action, costume, before/after prop states, sound cues
+and transition. Speaking performers retain their native voices and original A/V
+timing. Each component review must explicitly check unintended speech; speaking
+shots must also have a complete sentence and clean rest. The two-speaker pilot,
+full-utterance normal/half-speed reviews and full-film duration gates still apply.
+
+Caption readability is checked by default before native rendering and again
+against the actual localized sidecar during final QA. English cards require at
+least two seconds, no more than 16 characters/second, two lines and 42 characters
+per line. Ordered text must reproduce the storyboard dialogue exactly once.
+Overlaps, final-word flashes, missing words and stale locale bindings hold the
+release. `--prepare-readable-captions` can propose extensions into existing pauses
+or merge a short sentence; it never changes actor timing. Crowded cards require
+explicit editorial replanning, never slower speech or invented word timings.
+Other languages require their own fluent typography and timing review; English
+character limits are not represented as a Malayalam fluency test.
+
+The QA JSON must now contain `finishing_review`. In Director Studio's Quality
+tab, **Prepare unpassed finishing checklist** downloads a source-bound pending
+checklist; the same API is `story_studio.finishing_review_template(store,
+story_id, master_path)`. A generated checklist is not a passing review. Fill it
+only after actual review, preserving the raw report in a hash-bound local file.
+
+The finishing review binds story ID, final master, current captions, storyboard,
+resolved cinema policy and locale. It requires:
+
+- Actual complete-movie audio/video review, a named reviewer, explicit
+  `reviewer_kind` (`human`, `ai`, `assisted`), media-access confirmation and honest
+  limitations. A sampled AI review must describe its sampling; no human viewing
+  or phoneme-perfect claim may be invented.
+- All named creative checks: plot fidelity and complete ending; acting,
+  listening and dialogue; likeness/proportions/cast count; wardrobe, sets,
+  props, camera/eyeline/action; chronology/weather/light; native voice/timing;
+  pleasant age-appropriate music, intelligibility and clean boundaries;
+  matching readable captions; no padded footage; independent story delivery.
+- Every shot's opening, ending and join checked on the actual final timeline,
+  with a specific observed detail and no unintended voices, clicks or cut-off
+  words. This includes action-only shots. Checks must cover the exact board in
+  order, including the beginning and ending.
+- At least three distinct, bounded `start_seconds`/`end_seconds` audiovisual
+  observations spanning the beginning, middle and ending; preserved review files must exist and match SHA-256. Ambiguous
+  MMSS-as-seconds values or out-of-range observations are rejected. Resolve
+  contradictory reports against actual excerpts and preserve negative evidence.
+- An empty `unresolved_issues` list. A component pass, transcript, technical
+  decode or an exported file cannot substitute for final creative acceptance.
+
+Final QA, QA import and exact-package owner approval independently recheck these
+requirements. The software validates evidence and objective constraints; it does
+not automatically judge subjective performance or hear defects. Failed or
+changed candidates stay held. No extra provider credits are spent by these checks.
+
+`build_platform_package(..., metadata={...})` accepts prepared `platform_titles`,
+`platform_descriptions`, `topics`, `keywords` and `chapters`, also available in the
+Packaging UI. Request defaults are retained unless explicitly overridden. Cinema
+packages require prepared text for every selected platform plus relevant tags
+and keywords. Metadata becomes part of the exact approved package hash; it cannot
+supply fake QA, rights or audience approvals. Keep narrow relevant tags (up to
+five), truthful hooks and thumbnails, native child-directed/AI controls, matching
+captions, primary-account-only distribution and verified dated archives. No
+metadata strategy guarantees views or monetization. Platform authorization and
+manual handoff restrictions remain in effect.
+
+Each story retains its own movie, captions, metadata, reviews, publication
+receipts and dated media archive. New policy revisions do not combine films,
+replace old public uploads or silently reuse their approvals.
+
+
+## Reuse before generation
+
+Flow exports now disable another request when a matching shot/prompt receipt
+identifies an unchanged saved take. This includes pending review: saved work
+needs evaluation or explicit replanning, not another automatic paid request.
+A missing/changed previously saved take is held for recovery. Every request
+specifies one output; a request producing several outputs can consume credits
+for each. Existing acting, lip-sync, duration and final-film gates still apply.
+
+`studio_efficiency.reusable_asset` verifies exact recipe, rights, asset and review
+hashes for approved stills and narrator bridges. Scene/character/style/costume,
+lighting/composition/output settings, or exact words/voice/locale must match.
+Native character speech is never a separately cached TTS substitute. New scene
+context still requires review, even when the asset is reusable.
+
+LLM prompts retain every rule, exact dialogue and evidence while removing
+duplicated template fields and placing stable production rules first. The
+provider decides cache eligibility; report actual usage rather than promising
+a discount. A bounded local technical-decode cache reuses only a real passing
+decode of identical SHA-256 bytes under the same decoder. It rehashes before
+and after checking; it never caches creative or synchronization approval.
+
+The external profile may require `production_attribution` with `credit_line`,
+`required_hashtags` (at most four, reserving one of five for the story), and
+`search_keywords`. These owner-supplied producer facts are separate from story
+topics. Every platform description receives the exact credit and canonical tags,
+including supplied description overrides; company names enter search keywords.
+Credits and tags are included in the exact approval hash. No company names or
+commercial relationships are hardcoded in the public application.
+
+Cost research, checked 2026-10-18:
+
+- [Flow credits](https://support.google.com/flow/answer/16526234?hl=en): costs are per output, depend on model/plan, and must be rechecked in the current prompt settings. Shortening a prompt alone does not establish credit savings.
+- [Flow capabilities](https://support.google.com/flow/answer/16352836?hl=en): image ingredients and available features differ by model; included no-charge image options may be candidates after actual quality review.
+- [Google video best practices](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/video/best-practice): use a high-quality staged source, focus image-to-video instructions on the motion, and keep one focused event per short take.
+- [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching): stable prefixes enable eligible cache reuse; billing and cache eligibility depend on the model.
+- [OpenAI image generation](https://developers.openai.com/api/docs/guides/image-generation): track actual usage/settings; eligible image-input cache pricing is API-route-specific.
+- [YouTube monetization policies](https://support.google.com/youtube/answer/1311392?hl=en): asset reuse must still create distinct, original, useful storytelling. Repeated footage, mass-produced near-duplicates and padding are not cost optimizations.
+
+Use current, account-confirmed quotes and an accepted two-character native pilot
+before switching to a cheaper speech model. Draft-resolution generation and
+upscaling remain experiments until their final performance/visual quality passes.
+Prefer local caption/audio repairs with documented source/packet identities,
+approved set/actor references, cached unchanged planning, and regeneration of
+only the failed shot. Keep subscription allowances, Flow credits and API money
+as separate ledgers; never treat missing prices or unmeasured savings as zero.
+
+### Local finishing from a saved native timeline
+
+The Quality assembly form and `app.services.studio_native_finish` can reuse an
+existing, hash-bound native picture/PCM timeline for corrected captions and a
+fresh sound mix. Source and current plans must retain identical ordered actor
+clips, original frame intervals, words, voices, durations and locale. The source
+receipt must bind its original plan and complete technical decode. Corrected
+caption candidates pass the same readability checks before rendering.
+
+Audio cleanup requires a reason and unchanged actual review-evidence file hash
+for every altered shot. Sample-based trims/padding retain the original clock;
+action-only slots carry no unintended generated dialogue. Original speech is
+never resynthesized. Music and license evidence are independently hashed.
+After loudness normalization, the mix is explicitly resampled to 48 kHz and
+conformed to the original timeline's exact sample count before AAC encoding.
+The decoded final audio must still fit the existing codec tolerance; a matching
+container duration cannot substitute for this check. This conformance preserves
+the native performance clock and never authorizes shortened dialogue or video
+padding. The receipt records expected and decoded samples and the sample rate.
+This is a local render with zero new provider generations, not a quality pass.
+The entire final video and audio are decoded; final audiovisual/creative review
+and current profile/version gates still determine release. Every output uses a
+new filename, and the Studio archives generated outputs and caption sidecars.
+
+### Submission and review evidence before more spending
+
+Every Flow bundle includes mandatory submission and review-capture acceptance
+instructions. Reserve credits before one Generate click. If its acknowledgement
+is uncertain, keep that attempt reserved and inspect saved provider jobs before
+any retry. A retained composer or a virtualized gallery without the new card is
+not proof that no job was submitted. Preserve failed/alternate takes and reconcile
+the ledger. The existing uncertain-phase hold requires explicit resolution;
+Studio cannot observe clicks made outside its manual handoff.
+
+For browser-assisted reviews, retrieve the complete rendered response (for
+example, a code element's `textContent`) before treating a short accessibility
+snapshot as a truncated model response. Parse the JSON and check exact ordered
+coverage against the storyboard. Never rerun a review merely because the UI
+only exposes part of an otherwise complete response, and never approve missing
+rows. Native component observations must contain at least three distinct finite
+numeric timestamps, within the selected take, and actual visible/audible events.
+Assembly now checks this before rendering as well as at final QA. Legacy numeric
+strings/ranges require explicit curation retaining the original evidence and
+timing representation; the gate does not silently invent precision or viewing.
+
+### Continuous native speaking takes
+
+A native-dialogue single must use one continuous interval from one original A/V
+source, with the selected duration matching that source's native frame clock.
+Do not splice a restarted word or cover a broken utterance with a silent actor
+and call it an accepted single. Preserve the failed source, record the defect and
+request a new fluent native take within the current authorized credit budget.
+Action/reaction shots can remain separately planned non-speaking slots; they
+cannot conceal a failed speaking performance. Normal/half-speed, boundary and
+whole-film reviews are still required for the replacement.
+
+### Review transcript reconciliation
+
+Contract 3.2 requires the hash-bound source review to identify exactly one
+matching shot and report its complete `heard_words`. Missing or conflicting
+transcripts hold native assembly even if the curated decision says passed.
+Normalization handles case, punctuation, common unambiguous English contractions
+and small-number spelling; it preserves repeated words, added clauses and
+negation. Unicode vowel/combining marks remain intact for localized episodes.
+Compare independent wording evidence against that same selected source as well.
+Matching text never establishes lip sync, natural acting or creative approval.
+
+A tail-only editorial experiment may select one contiguous original interval
+after a complete correct utterance and natural listening rest, before a later
+unwanted restart. It requires an explicit duration replan, exact original frame
+range, fresh normal/half-speed A/V acceptance and a whole-film boundary check.
+It cannot salvage an internal repetition, clipped word or missing dialogue.
+Preserve the full original and every candidate; a pending experiment cannot
+become an accepted component or publication permission.

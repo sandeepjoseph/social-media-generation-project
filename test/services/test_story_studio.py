@@ -304,8 +304,25 @@ def test_package_approval_is_bound_to_current_assets_and_analytics_cost_unknown(
         captions_path=captions,
         platforms=("youtube_long",),
         human_review=review,
+        metadata={
+            "platform_titles": {"youtube_long": "Can they share the fruit?"},
+            "platform_descriptions": {
+                "youtube_long": "A gentle story about sharing fruit. #Sharing"
+            },
+            "keywords": ["fruit", "sharing"],
+        },
     )
     assert asset["publishing"] == "manual_handoff_only"
+    assert asset["platforms"]["youtube_long"]["title"] == "Can they share the fruit?"
+    assert (
+        asset["platforms"]["youtube_long"]["description"]
+        == "A gentle story about sharing fruit. #Sharing"
+    )
+    saved_facts = store.latest_artifact(sid, "package_facts")["document"]["facts"]
+    assert saved_facts["platform_titles"] == {
+        "youtube_long": "Can they share the fruit?"
+    }
+    assert saved_facts["keywords"] == ["fruit", "sharing"]
     approval_id = approve_package(
         store, sid, saved_master["sha256"], asset["package_sha256"], "local reviewer"
     )
@@ -883,3 +900,94 @@ def test_account_check_receipt_is_a_hold_and_does_not_create_a_receipt(tmp_path)
     }
     assert store.phase(sid, "flow")["status"] == "needs_manual"
     assert store.flow_receipts(sid) == []
+
+
+def test_quality_preserves_only_proven_retired_recipe_receipts(tmp_path):
+    from app.services.story_studio import _retired_recipe_receipts
+
+    store = StudioStore(tmp_path / "scope.sqlite3")
+    sid = _story(store)["story_id"]
+    store.add_artifact(
+        sid,
+        "flow_bundle",
+        document={
+            "shots": [
+                {"shot_id": "current", "prompt_sha256": "a" * 64},
+                {"shot_id": "removed", "prompt_sha256": "b" * 64},
+            ]
+        },
+    )
+    expected = {"current": "a" * 64}
+    actual = {
+        "current": {"prompt_sha256": "c" * 64},
+        "removed": {"prompt_sha256": "b" * 64},
+        "unknown": {"prompt_sha256": "b" * 64},
+    }
+    assert _retired_recipe_receipts(store, sid, expected, actual) == ["removed"]
+    actual["removed"]["prompt_sha256"] = "d" * 64
+    assert _retired_recipe_receipts(store, sid, expected, actual) == []
+    assert len(store.latest_artifact(sid, "flow_bundle")["document"]["shots"]) == 2
+
+
+def test_research_only_rights_do_not_clear_production_assets(tmp_path):
+    store = StudioStore(tmp_path / "research.sqlite3")
+    sid = _story(store)["story_id"]
+    for category in ["research_plot_comparison", "visual", "voice"]:
+        store.add_evidence(
+            sid,
+            {
+                "source": category,
+                "category": category,
+                "claim": "Consulted only for plot; modern text/art/audio excluded.",
+                "notes": "Reference provenance retained; no license or asset transfer claimed.",
+                "rights_status": "reference_only_not_reused",
+                "confidence": "high",
+            },
+        )
+    issues = quality_report(store, sid)["issues"]
+    assert "rights_review_required: research_plot_comparison" not in issues
+    assert "rights_review_required: visual" in issues
+    assert "rights_review_required: voice" in issues
+
+
+def test_quality_accepts_retired_history_but_rejects_current_recipe_change(tmp_path):
+    import copy
+
+    store = StudioStore(tmp_path / "retired-integration.sqlite3")
+    sid = _story(store)["story_id"]
+    _evidence(store, sid)
+    _creative(store, sid)
+    original = _complete_flow_receipts(store, sid, tmp_path)
+    current = store.latest_artifact(sid, "flow_bundle")["document"]
+    prior = copy.deepcopy(current)
+    removed = {
+        **prior["shots"][0],
+        "shot_id": "removed-shot",
+        "prompt_sha256": "b" * 64,
+    }
+    prior["shots"].append(removed)
+    store.add_artifact(sid, "flow_bundle", document=prior)
+    store.import_flow_receipt(
+        sid,
+        {
+            "shot_id": "removed-shot",
+            "prompt_sha256": "b" * 64,
+            "asset_path": original["asset_path"],
+            "provider": "original historical generation",
+        },
+    )
+    store.add_artifact(sid, "flow_bundle", document=current)
+    result = quality_report(store, sid)
+    assert "flow_receipts_do_not_match_current_bundle" not in result["issues"]
+    assert result["retired_recipe_receipt_ids"] == ["removed-shot"]
+    assert {r["shot_id"] for r in store.flow_receipts(sid)} == {
+        "shot-01",
+        "removed-shot",
+    }
+    changed = copy.deepcopy(current)
+    changed["shots"][0]["prompt_sha256"] = "c" * 64
+    store.add_artifact(sid, "flow_bundle", document=changed)
+    assert (
+        "flow_receipts_do_not_match_current_bundle"
+        in quality_report(store, sid)["issues"]
+    )

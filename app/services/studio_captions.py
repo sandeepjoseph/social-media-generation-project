@@ -111,7 +111,18 @@ def parse_caption_file(path: str | Path, *, duration_seconds: float) -> dict[str
             raise ValueError(
                 f"caption cue ends after verified media duration ({end:.3f}s > {duration_seconds:.3f}s)"
             )
-        cues.append({"start_seconds": start, "end_seconds": end, "text": text})
+        cues.append(
+            {
+                "start_seconds": start,
+                "end_seconds": end,
+                "text": text,
+                "lines": [
+                    re.sub(r"<[^>]*>|\{[^}]*\}", "", line).strip()
+                    for line in lines[timing_index + 1 :]
+                    if line.strip()
+                ],
+            }
+        )
         previous_start = start
     if not cues:
         raise ValueError("caption file must contain at least one non-empty cue")
