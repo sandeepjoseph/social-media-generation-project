@@ -524,6 +524,25 @@ def _credit_description(description, facts, hashtags):
         return description
     # Rebuild only standalone hashtag tokens, preserving source-URL fragments.
     body = re.sub(r"(?<!\S)#[\w]+", "", description).strip()
+    owner = _text(facts.get("rights_owner"))
+    legacy_notice = (
+        copyright_notice.replace(f" {owner} ", f" {owner}. ", 1)
+        if owner.endswith(".")
+        else copyright_notice
+    )
+    paragraphs = []
+    seen_footers = set()
+    for paragraph in re.split(r"\n\s*\n", body):
+        paragraph = paragraph.strip()
+        if paragraph == legacy_notice:
+            paragraph = copyright_notice
+        if paragraph in (credit, copyright_notice):
+            if paragraph in seen_footers:
+                continue
+            seen_footers.add(paragraph)
+        if paragraph:
+            paragraphs.append(paragraph)
+    body = "\n\n".join(paragraphs)
     for line in (credit, copyright_notice):
         if line and line not in body:
             body += "\n\n" + line
@@ -540,10 +559,11 @@ def _copyright(facts):
     if isinstance(year, bool) or not isinstance(year, int) or not 1900 <= year <= 9999:
         raise ValueError("Copyright credit requires the first-publication year")
     scope = "Original production elements, to the extent protected. Underlying folklore and third-party materials retain their respective rights."
+    owner_punctuation = "" if owner.endswith(".") else "."
     return {
         "rights_owner": owner,
         "first_publication_year": year,
-        "notice": f"© {year} {owner}. {scope}",
+        "notice": f"© {year} {owner}{owner_punctuation} {scope}",
         "basis": "Owner-declared; asset licences and ownership evidence remain independently required.",
     }
 
