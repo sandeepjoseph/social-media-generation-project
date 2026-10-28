@@ -67,6 +67,44 @@ def test_copyright_change_invalidates_exact_package_approval(tmp_path):
         package_story(facts)
 
 
+@pytest.mark.parametrize("owner", ["Example Studio", "Example Inc."])
+def test_prepared_copyright_footer_is_idempotent_and_keeps_other_rights(tmp_path, owner):
+    facts = _facts(tmp_path)
+    scope = (
+        "Original production elements, to the extent protected. "
+        "Underlying folklore and third-party materials retain their respective rights."
+    )
+    notice = f"© 2026 {owner.rstrip('.')}. {scope}"
+    legacy = f"© 2026 {owner}. {scope}"
+    separate_rights = "© 2024 Another Studio. Separately licensed music."
+    credit = "Produced by Example Media."
+    facts.update(
+        rights_owner=owner,
+        first_publication_year=2026,
+        production_credit_line=credit,
+        platform_descriptions={
+            p: "\n\n".join(
+                ["A fair promise.", credit, notice, legacy, separate_rights, "#old"]
+            )
+            for p in DEFAULT_PLATFORMS
+        },
+    )
+    package = package_story(facts)
+    for item in package["platforms"].values():
+        assert item["copyright"]["rights_owner"] == owner
+        assert item["copyright"]["notice"] == notice
+        assert item["description"].count(notice) == 1
+        assert item["description"].count(credit) == 1
+        assert separate_rights in item["description"]
+        assert "Inc.." not in item["description"]
+        assert "#old" not in item["description"]
+    facts["platform_descriptions"] = {
+        p: item["description"] for p, item in package["platforms"].items()
+    }
+    repeated = package_story(facts)
+    assert repeated["package_sha256"] == package["package_sha256"]
+
+
 def _asset(path):
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
