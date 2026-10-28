@@ -189,6 +189,10 @@ def review_for(board, receipts, board_hash, *, pilot=False):
                 "voice_consistency_pass": True,
                 "unintended_speech_absent": True,
                 "complete_sentence_and_rest_pass": True,
+                "head_eye_hand_tracking_pass": True,
+                "single_actor_and_prop_state_pass": True,
+                "normal_full_utterance_reviewed": True,
+                "half_speed_full_utterance_reviewed": True,
                 "review_method": "full_utterance_normal_and_half_speed",
                 "sync_observations": [
                     {

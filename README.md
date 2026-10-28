@@ -144,6 +144,7 @@ with production-role briefs; it does not launch an autonomous crew of agents.
 | Production-role briefs | Researcher, writer, director, choreographer, cinematography/camera, lighting/art/costume, sound, captions, growth and reviewer each supply their planned decisions |
 | Native actor A/V | Characters visibly act, listen and speak their own exact lines in stable voices; no closed-mouth narrator substitution |
 | Pilot and shot review | Two different speaking characters pass the exact native-A/V pilot before remaining generation; each whole utterance receives actual normal/half-speed review |
+| Reviewed generation batches | After the pilot, release at most four new shots, then hold until complete source-bound native A/V review passes; unresolved findings override positive booleans. See [batch gates](docs/generation-batches.md) |
 | Review integrity | The exact source review must identify one unambiguous shot and report its complete heard words; missing transcripts, another shot's line, omitted words or repeated speech hold native assembly even when a curator marked it passed. Word agreement is only a negative consistency check and never proves lip sync or acting quality. |
 | Continuity and final acceptance | Plot, actors, proportions, costume, props, eyelines, motion, time/weather/light, clean boundaries, pleasant sound and complete ending are independently reviewed |
 | Locale captions | Media, audio, voice record and SRT/VTT locales agree; English readability is checked, and each localization requires fluent review |

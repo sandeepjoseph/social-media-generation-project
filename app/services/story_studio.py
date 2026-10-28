@@ -1108,9 +1108,42 @@ class StudioStore:
         item.pop("document_json")
         return item
 
+    def artifact_history(self, story_id: str, kind: str) -> list[dict[str, Any]]:
+        """Read chronological structured evidence without replacing older findings."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE story_id=? AND kind=? ORDER BY created_at, rowid",
+                (story_id, kind),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "document": json.loads(row["document_json"])
+                if row["document_json"]
+                else None,
+            }
+            for row in rows
+        ]
+
     def import_flow_receipt(
         self, story_id: str, receipt: dict[str, Any]
     ) -> dict[str, Any]:
+        if receipt.get("provider_content_policy_rejected"):
+            self.wait_for_manual_phase(
+                story_id,
+                "flow",
+                receipt,
+                {
+                    "status": "provider_content_policy_hold",
+                    "automatic_retry": False,
+                    "instruction": "Resolve the provider rejection without rephrasing to evade its policy.",
+                },
+            )
+            return {
+                "status": "requires_human",
+                "automatic_retry": False,
+                "provider_content_policy_rejected": True,
+            }
         if receipt.get("provider_account_check_required"):
             self.wait_for_manual_phase(
                 story_id,
@@ -1556,6 +1589,179 @@ def _require_current_cinema_profile(store: StudioStore, story_id: str) -> None:
         raise ValueError(
             "template or implementation changed; apply latest template and replan"
         )
+
+
+def import_performance_batch_review(
+    store: StudioStore, story_id: str, review: dict
+) -> dict:
+    """Preserve negative evidence; only a bound complete batch can release work."""
+    _require_current_cinema_profile(store, story_id)
+    policy, board = _cinema_context(store, story_id)
+    if not policy or not board or not isinstance(review, dict):
+        raise ValueError("a cinema storyboard and structured batch review are required")
+    ids = review.get("batch_shot_ids")
+    if not isinstance(ids, list) or any(not isinstance(x, str) for x in ids):
+        raise ValueError("explicit batch_shot_ids are required")
+    issues = cinema.performance_review_issues(
+        review,
+        board["document"],
+        store.flow_receipts(story_id),
+        policy=policy,
+        storyboard_sha256=board["sha256"],
+        batch_ids=ids,
+    )
+    if review.get("story_id") != story_id:
+        issues.append("cinema:batch_story_binding_mismatch")
+    artifact = store.add_artifact(
+        story_id,
+        "performance_batch_review",
+        document=review,
+        provenance={"validation_issues": issues, "not_full_film_approval": True},
+    )
+    if (
+        issues
+        and review.get("story_id") == story_id
+        and review.get("storyboard_sha256") == board["sha256"]
+    ):
+        store.invalidate_downstream(story_id, "flow")
+    return {
+        "accepted": not issues,
+        "issues": issues,
+        "artifact_id": artifact["artifact_id"],
+    }
+
+
+def generation_batch_status(
+    store, story_id, board, policy, receipts, pilots, pilot_accepted
+):
+    """Limit each manual handoff; cannot observe unrecorded external requests."""
+    from app.services.studio_efficiency import saved_take
+
+    decisions = {}
+    actual = {r["shot_id"]: r for r in receipts}
+    for artifact in store.artifact_history(story_id, "performance_batch_review"):
+        review = artifact["document"]
+        if not isinstance(review, dict) or artifact["sha256"] != _digest_bytes(
+            _json(review).encode()
+        ):
+            continue
+        ids = review.get("batch_shot_ids")
+        if (
+            review.get("story_id") != story_id
+            or review.get("storyboard_sha256") != board["sha256"]
+            or review.get("policy_sha256") != cinema.digest(policy)
+            or not isinstance(ids, list)
+            or any(not isinstance(x, str) for x in ids)
+        ):
+            continue
+        issues = cinema.performance_review_issues(
+            review,
+            board["document"],
+            receipts,
+            policy=policy,
+            storyboard_sha256=board["sha256"],
+            batch_ids=ids,
+        )
+        rows = review.get("shots", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and row.get("shot_id") in ids:
+                receipt = actual.get(row["shot_id"], {})
+                if row.get("asset_sha256") == receipt.get(
+                    "asset_sha256"
+                ) and receipt.get("asset_sha256"):
+                    # A later negative on these exact bytes supersedes a positive.
+                    decisions[row["shot_id"]] = not issues
+    missing, pending = [], []
+    for shot in board["document"]["shots"]:
+        if shot["shot_id"] in pilots:
+            continue
+        reuse = saved_take(shot, receipts)
+        if (
+            reuse["generation_allowed"]
+            and shot.get("new_generation_required", True) is not False
+        ):
+            missing.append(shot["shot_id"])
+        elif (
+            reuse["status"] != "saved_take_available_review_still_required"
+            or decisions.get(shot["shot_id"]) is not True
+        ):
+            pending.append(shot["shot_id"])
+    maximum = int(policy["max_unreviewed_generation_batch_shots"])
+    allowed = missing[:maximum] if pilot_accepted and not pending else []
+    return {
+        "required": True,
+        "maximum_shots": maximum,
+        "allowed_shot_ids": allowed,
+        "pending_source_review_ids": pending,
+        "remaining_missing_shots": len(missing),
+        "status": "pilot_required"
+        if not pilot_accepted
+        else "review_required"
+        if pending
+        else "bounded_batch_ready",
+        "full_film_approval": False,
+        "runtime_boundary": "Export/preflight gates only; unrecorded provider clicks are not observable.",
+    }
+
+
+def performance_batch_review_template(store, story_id):
+    """An unpassed source-bound form; never a generated acceptance statement."""
+    _require_current_cinema_profile(store, story_id)
+    policy, board = _cinema_context(store, story_id)
+    if not policy or not board:
+        raise ValueError("a cinema storyboard is required")
+    receipts = store.flow_receipts(story_id)
+    plan = generation_batch_status(
+        store,
+        story_id,
+        board,
+        policy,
+        receipts,
+        cinema.pilot_ids(board["document"]),
+        _pilot_passed(store, story_id),
+    )
+    ids = plan["pending_source_review_ids"][: plan["maximum_shots"]]
+    byid = {r["shot_id"]: r for r in receipts}
+    return {
+        "story_id": story_id,
+        "status": "needs_review",
+        "reviewer": "",
+        "storyboard_sha256": board["sha256"],
+        "policy_sha256": cinema.digest(policy),
+        "batch_shot_ids": ids,
+        "not_full_film_approval": True,
+        "shots": [
+            {
+                "shot_id": sid,
+                "asset_sha256": byid.get(sid, {}).get("asset_sha256"),
+                "source_path": byid.get(sid, {}).get("asset_path"),
+                **{
+                    k: False
+                    for k in (
+                        "performance_pass",
+                        "exact_words_pass",
+                        "correct_speaker_pass",
+                        "lip_sync_pass",
+                        "original_av_timing_preserved",
+                        "voice_consistency_pass",
+                        "unintended_speech_absent",
+                        "complete_sentence_and_rest_pass",
+                        "head_eye_hand_tracking_pass",
+                        "single_actor_and_prop_state_pass",
+                        "normal_full_utterance_reviewed",
+                        "half_speed_full_utterance_reviewed",
+                    )
+                },
+                "review_method": "",
+                "sync_observations": [],
+                "observed_issues": [],
+                "curation_issues": [],
+            }
+            for sid in ids
+        ],
+    }
 
 
 def finishing_review_template(store: StudioStore, story_id: str, master_path) -> dict:
@@ -2015,6 +2221,17 @@ def import_quality_review(
         issues.extend(
             _finishing_issues(store, story_id, master, report.get("finishing_review"))
         )
+        batch = generation_batch_status(
+            store,
+            story_id,
+            board,
+            policy,
+            store.flow_receipts(story_id),
+            cinema.pilot_ids(board["document"]),
+            _pilot_passed(store, story_id),
+        )
+        if batch["pending_source_review_ids"] or batch["remaining_missing_shots"]:
+            issues.append("cinema:unresolved_generation_batch_reviews")
         if issues:
             raise ValueError("; ".join(issues))
     artifact = store.add_artifact(
@@ -2764,6 +2981,15 @@ def request_storyboard_draft(
 
 def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
     _require_current_cinema_profile(store, story_id)
+    flow_phase = store.phase(story_id, "flow")
+    flow_output = json.loads(flow_phase.get("output_json") or "{}")
+    if flow_phase["status"] == "needs_manual" and flow_output.get("status") in {
+        "provider_account_check_required",
+        "provider_content_policy_hold",
+    }:
+        raise ValueError(
+            "resolve the recorded provider hold before exporting another generation handoff"
+        )
     if store.phase(story_id, "storyboard")["status"] != "complete":
         raise RuntimeError(
             "complete and review the storyboard phase before exporting Flow prompts"
@@ -2790,6 +3016,13 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
     from app.services.studio_efficiency import saved_take
 
     saved_receipts = store.flow_receipts(story_id)
+    batch = (
+        generation_batch_status(
+            store, story_id, board, policy, saved_receipts, pilots, pilot_accepted
+        )
+        if policy
+        else None
+    )
     for asset in profile.get("approved_assets", []):
         asset_path = Path(str(asset.get("path", "")))
         if not asset_path.is_file() or digest_file(asset_path) != asset.get("sha256"):
@@ -2857,7 +3090,11 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
                 "generation_allowed": shot.get("new_generation_required", True)
                 is not False
                 and reuse["generation_allowed"]
-                and (not policy or pilot_accepted or shot["shot_id"] in pilots),
+                and (
+                    not policy
+                    or shot["shot_id"] in pilots
+                    or shot["shot_id"] in batch["allowed_shot_ids"]
+                ),
                 "reuse": reuse,
                 "max_outputs_per_request": 1,
             }
@@ -2879,6 +3116,7 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             "accepted": pilot_accepted,
             "bulk_generation_hold": bool(policy and not pilot_accepted),
         },
+        "generation_batch": batch,
         "approved_reference_assets": list(archived_assets.values()),
         "shots": bundle_shots,
         "provider_account_check_required": "hold_without_retry_or_account_switch",
@@ -2934,16 +3172,21 @@ def export_flow_bundle(store: StudioStore, story_id: str) -> dict[str, Any]:
             "A provider account warning is a human hold, not a retry signal.",
         ],
     }
-    store.wait_for_manual_phase(
-        story_id,
-        "flow",
-        {"storyboard_sha256": board["sha256"]},
-        {
-            "status": "manual_generation_required",
-            "shot_count": len(bundle_shots),
-            "prompt_hashes": [shot["prompt_sha256"] for shot in bundle_shots],
-        },
+    fully_received = all(
+        s["reuse"]["status"] == "saved_take_available_review_still_required"
+        for s in bundle_shots
     )
+    if flow_phase["status"] != "complete" or not fully_received:
+        store.wait_for_manual_phase(
+            story_id,
+            "flow",
+            {"storyboard_sha256": board["sha256"]},
+            {
+                "status": "manual_generation_required",
+                "shot_count": len(bundle_shots),
+                "prompt_hashes": [shot["prompt_sha256"] for shot in bundle_shots],
+            },
+        )
     store.add_artifact(
         story_id,
         "flow_bundle",

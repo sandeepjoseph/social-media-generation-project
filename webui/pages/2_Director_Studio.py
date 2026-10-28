@@ -27,6 +27,8 @@ from app.services.story_studio import (
     refresh_story_profile,
     record_learning_rule,
     import_performance_pilot_review,
+    import_performance_batch_review,
+    performance_batch_review_template,
     finishing_review_template,
 )
 from app.services.studio_cinema import policy_for
@@ -193,7 +195,9 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
             intended_index = (
                 1
                 if intended_made_for_kids is True
-                else 2 if intended_made_for_kids is False else 0
+                else 2
+                if intended_made_for_kids is False
+                else 0
             )
             made_for_kids_choice = st.selectbox(
                 "Intended child-directed setting",
@@ -240,7 +244,9 @@ with st.expander("Start one story", expanded=not bool(store.list_stories())):
                 audience_intent = (
                     True
                     if made_for_kids_choice == "Yes"
-                    else False if made_for_kids_choice == "No" else None
+                    else False
+                    if made_for_kids_choice == "No"
+                    else None
                 )
                 result = store.create_story(
                     {
@@ -465,8 +471,41 @@ with tab_flow:
                     store, story_id, json.loads(pilot_file.getvalue())
                 )
                 st.success(
-                    "Pilot accepted for this exact storyboard and media. Re-export the Flow bundle to release its remaining shots."
+                    "Pilot accepted for this exact storyboard and media. Re-export for the next bounded batch of at most four shots."
                 )
+            except Exception as exc:
+                st.error(str(exc))
+        st.caption(
+            "After the pilot, review each small native batch before releasing more shots. Negative observations override positive verdicts; a batch review never approves the finished film."
+        )
+        if st.button("Prepare blank native batch review"):
+            try:
+                template = performance_batch_review_template(store, story_id)
+                st.download_button(
+                    "Download unpassed batch review JSON",
+                    json.dumps(template, indent=2),
+                    file_name=f"{story_id}-batch-review-unpassed.json",
+                    mime="application/json",
+                )
+            except Exception as exc:
+                st.error(str(exc))
+        batch_file = st.file_uploader(
+            "Native batch performance review JSON", type=["json"], key="cinema_batch"
+        )
+        if batch_file and st.button("Import native batch review"):
+            try:
+                result = import_performance_batch_review(
+                    store, story_id, json.loads(batch_file.getvalue())
+                )
+                if result["accepted"]:
+                    st.success(
+                        "Batch accepted for these exact sources. Re-export to check the next bounded batch; final-film gates remain required."
+                    )
+                else:
+                    st.warning(
+                        "Review preserved with a hold. Resolve every issue before more generation."
+                    )
+                    st.json(result["issues"])
             except Exception as exc:
                 st.error(str(exc))
     st.warning(
@@ -657,11 +696,7 @@ with tab_qa:
                             "speech_mode"
                         ) == "native_dialogue" and receipts.get(
                             entry["shot_id"], {}
-                        ).get(
-                            "asset_sha256"
-                        ) != entry.get(
-                            "sha256"
-                        ):
+                        ).get("asset_sha256") != entry.get("sha256"):
                             raise ValueError(
                                 "Import the exact reviewed native performance receipt before assembly"
                             )
@@ -1024,7 +1059,9 @@ with tab_assets:
                     "made_for_kids_reviewed": (
                         True
                         if made_for_kids_reviewed == "Yes"
-                        else False if made_for_kids_reviewed == "No" else None
+                        else False
+                        if made_for_kids_reviewed == "No"
+                        else None
                     ),
                     "ai_realistic_content": (
                         None if ai_reviewed == "Needs review" else ai_reviewed

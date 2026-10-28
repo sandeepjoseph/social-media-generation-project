@@ -346,6 +346,16 @@ def test_full_cinema_release_rechecks_finishing_evidence_at_owner_approval(
             pilot["story_id"] = sid
             studio.import_performance_pilot_review(store, sid, pilot)
             studio.export_flow_bundle(store, sid)
+        elif index >= 5 and (index - 1) % 4 == 0:
+            subset = {"shots": board["shots"][index - 3 : index + 1]}
+            reviewed_batch = review_for(subset, store.flow_receipts(sid), board_sha)
+            reviewed_batch.update(
+                story_id=sid, batch_shot_ids=[s["shot_id"] for s in subset["shots"]]
+            )
+            assert studio.import_performance_batch_review(store, sid, reviewed_batch)[
+                "accepted"
+            ]
+            studio.export_flow_bundle(store, sid)
     master = tmp_path / "candidate.mp4"
     master.write_bytes(b"Final movie hash fixture; technical decoder mocked explicitly")
     captions = tmp_path / "captions.srt"

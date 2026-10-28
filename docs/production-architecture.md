@@ -203,3 +203,16 @@ plus Ruff and diff checks. Prior fresh-channel relocation smoke evidence remains
 historical. These code checks do not approve a movie or prove any live account
 setting; exact-media reviews and publication receipts remain separate. Check
 current Git/CI state rather than treating dated validation as a permanent pass.
+
+
+## Bounded native rollout — cinema contract 3.3.0
+
+The [reviewed-batch workflow](generation-batches.md) adds a mandatory maximum of
+four new sources after the two-role pilot, complete source-hashed review before
+another handoff, chronological negative-review overrides and downstream approval
+invalidation. Director Studio exposes an unpassed form and explicit import.
+Provider security/content holds cannot be cleared by exporting another bundle.
+This limits rollout exposure inside recorded handoffs; it does not observe
+unrecorded clicks or guarantee provider spend. Existing episodes retain their
+frozen implementation and require explicit adoption/replan before these gates
+can replace their active contract. Batch acceptance does not approve a movie.

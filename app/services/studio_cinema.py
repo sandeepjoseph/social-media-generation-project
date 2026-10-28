@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "3.2.0"
+CONTRACT_VERSION = "3.3.0"
 DEFAULTS = {
     "enabled": True,
     "mode": "dialogue_led_film",
@@ -26,6 +26,7 @@ DEFAULTS = {
     "min_speaking_characters": 2,
     "max_dialogue_words_per_second": 2.5,
     "dialogue_handle_seconds": 1.0,
+    "max_unreviewed_generation_batch_shots": 4,
 }
 
 
@@ -89,6 +90,9 @@ def policy_for(profile: dict) -> dict:
         raise ValueError("invalid cinema duration or character policy")
     if policy["mode"] != "dialogue_led_film":
         raise ValueError("unsupported cinema performance mode")
+    batch_size = policy["max_unreviewed_generation_batch_shots"]
+    if not 1 <= batch_size <= 4 or int(batch_size) != batch_size:
+        raise ValueError("cinema generation batches must contain one to four shots")
     from app.services.studio_finishing import contract
 
     policy["provider_submission_preflight_required"] = True
@@ -377,6 +381,7 @@ def performance_review_issues(
     policy: dict,
     storyboard_sha256: str,
     pilot: bool = False,
+    batch_ids: list[str] | None = None,
 ) -> list[str]:
     """Validate explicit evidence-bound review, never manufacture attestations."""
     if not policy:
@@ -385,27 +390,50 @@ def performance_review_issues(
         return ["cinema:performance_review_required"]
     issues = []
     if (
+        review.get("observed_issues")
+        or review.get("curation_issues")
+        or review.get("unresolved_issues")
+    ):
+        issues.append("cinema:unresolved_review_findings")
+    if (
         review.get("status") != "passed"
         or review.get("storyboard_sha256") != storyboard_sha256
         or review.get("policy_sha256") != digest(policy)
         or not str(review.get("reviewer", "")).strip()
     ):
         issues.append("cinema:performance_review_stale_or_unbound")
-    if not pilot and not all(
-        review.get(k) is True
-        for k in (
-            "full_scene_playback_pass",
-            "acting_review_pass",
-            "continuity_review_pass",
-            "age_fit_pass",
+    if (
+        not pilot
+        and batch_ids is None
+        and not all(
+            review.get(k) is True
+            for k in (
+                "full_scene_playback_pass",
+                "acting_review_pass",
+                "continuity_review_pass",
+                "age_fit_pass",
+            )
         )
     ):
         issues.append("cinema:full_film_performance_review_incomplete")
     selected_ids = (
-        set(pilot_ids(board))
-        if pilot
-        else {s["shot_id"] for s in board.get("shots", [])}
+        set(batch_ids)
+        if batch_ids is not None
+        else (
+            set(pilot_ids(board))
+            if pilot
+            else {s["shot_id"] for s in board.get("shots", [])}
+        )
     )
+    if batch_ids is not None and (
+        pilot
+        or not batch_ids
+        or len(batch_ids) != len(set(batch_ids))
+        or len(batch_ids) > policy["max_unreviewed_generation_batch_shots"]
+        or not set(batch_ids).issubset({s["shot_id"] for s in board.get("shots", [])})
+        or set(batch_ids).intersection(pilot_ids(board))
+    ):
+        issues.append("cinema:invalid_generation_batch_review_scope")
     supplied = review.get("shots", [])
     if not isinstance(supplied, list) or any(not isinstance(r, dict) for r in supplied):
         return issues + ["cinema:shot_performance_reviews_required"]
@@ -419,6 +447,22 @@ def performance_review_issues(
             continue
         r = reviewed.get(sid, {})
         receipt = actual.get(sid, {})
+        if (
+            r.get("observed_issues")
+            or r.get("curation_issues")
+            or r.get("unresolved_issues")
+        ):
+            issues.append(f"cinema:{sid}:unresolved_observed_or_curated_issues")
+        if not all(
+            r.get(k) is True
+            for k in (
+                "head_eye_hand_tracking_pass",
+                "single_actor_and_prop_state_pass",
+                "normal_full_utterance_reviewed",
+                "half_speed_full_utterance_reviewed",
+            )
+        ):
+            issues.append(f"cinema:{sid}:complete_physical_performance_review_required")
         if not receipt.get("asset_sha256") or r.get("asset_sha256") != receipt.get(
             "asset_sha256"
         ):
@@ -442,6 +486,20 @@ def performance_review_issues(
                 issues.append(f"cinema:{sid}:dialogue_or_lip_sync_unverified")
             if r.get("review_method") != "full_utterance_normal_and_half_speed":
                 issues.append(f"cinema:{sid}:full_utterance_av_review_required")
+            issues.extend(
+                f"cinema:{sid}:{issue}"
+                for issue in sync_observation_issues(
+                    r.get("sync_observations"), shot["duration_seconds"]
+                )
+            )
+        else:
+            if r.get("original_av_timing_preserved") is not True or r.get(
+                "review_method"
+            ) not in {
+                "full_native_normal_and_half_speed",
+                "full_utterance_normal_and_half_speed",
+            }:
+                issues.append(f"cinema:{sid}:full_native_action_review_required")
             issues.extend(
                 f"cinema:{sid}:{issue}"
                 for issue in sync_observation_issues(
