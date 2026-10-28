@@ -177,9 +177,8 @@ reviewed checkout; `uv.lock` is the pinned environment. The legacy pip route is
 available in `requirements.txt`. See the upstream guide for OS-specific setup.
 
 ```sh
-git clone https://github.com/sandeepjoseph/social-media-generation-project.git
+git clone --branch codex/native-batch-quality-gate https://github.com/sandeepjoseph/social-media-generation-project.git
 cd social-media-generation-project
-git switch codex/mandatory-movie-acceptance
 uv sync --frozen --group dev
 ```
 
