@@ -56,6 +56,8 @@ def test_reuses_rules_not_credentials_accounts_assets_or_approvals(tmp_path):
             "api_key": "never-copy-me",
             "accounts": {"youtube": "old-owner"},
             "approved_assets": ["old-cast"],
+            "audience_strategy": {"primary_country": "IN", "release_timezone": "Asia/Kolkata"},
+            "media_retention_policy": {"owner_confirmation_required": True},
         }
     )
     profile["production_attribution"] = {
@@ -97,6 +99,8 @@ def test_reuses_rules_not_credentials_accounts_assets_or_approvals(tmp_path):
         "NewChannel",
         "ExampleMedia",
     ]
+    assert copied["audience_strategy"]["primary_country"] == "IN"
+    assert copied["media_retention_policy"]["owner_confirmation_required"] is True
     assert "New Channel actors speak visibly" in output
     assert json.loads((root / "asset-registry.json").read_text())["assets"] == {}
 

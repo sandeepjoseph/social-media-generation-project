@@ -11,6 +11,21 @@ from app.services.studio_growth import (
 )
 
 
+def test_market_and_retention_preferences_are_bound_to_exact_package(tmp_path):
+    facts = _facts(tmp_path)
+    facts["audience_strategy"] = {"primary_country": "IN", "release_timezone": "Asia/Kolkata"}
+    facts["media_retention_policy"] = {"owner_confirmation_required": True}
+    original = package_story(facts)
+    for item in original["platforms"].values():
+        assert item["audience_distribution"]["primary_country"] == "IN"
+        assert item["audience_distribution"]["organic_geographic_guarantee"] is False
+        assert item["media_retention_policy"]["owner_confirmation_required"]
+    facts["audience_strategy"]["primary_country"] = "CA"
+    changed = package_story(facts, approval={"master_sha256": original["master"]["sha256"], "package_sha256": original["package_sha256"]})
+    assert changed["package_sha256"] != original["package_sha256"]
+    assert not changed["approval"]["verified_for_exact_master_and_package"]
+
+
 def test_copyright_and_category_survive_every_platform_override(tmp_path):
     facts = _facts(tmp_path)
     facts.update(

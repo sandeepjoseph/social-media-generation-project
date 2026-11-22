@@ -212,6 +212,12 @@ A source ZIP is a code snapshot without Git update history.
 
 ## Minimum input and normal use
 
+Channel market and storage preferences are portable: see
+[audience and media retention](docs/audience-and-media-retention.md).
+Each package carries its market experiment and retention policy. Cleanup requires
+verified publication on all intended targets and an exact owner confirmation;
+the pipeline does not automatically delete media or guarantee country reach.
+
 In Director Studio, provide a story idea, source URL or your retelling. Advanced
 preferences can override language, audience, duration and platforms. A source URL
 is a research lead until actual evidence has been retrieved and imported.

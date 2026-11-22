@@ -31,6 +31,8 @@ _PROFILE_FIELDS = (
     "packaging_defaults",
     "search_policy",
     "engagement_policy",
+    "audience_strategy",
+    "media_retention_policy",
     "caption_policy",
     "cinema_policy",
     "efficiency_policy",

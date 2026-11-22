@@ -18,6 +18,7 @@ from app.services.studio_discovery import (
     youtube_preflight,
 )
 from app.services.studio_engagement import engagement_plan
+from app.services.studio_audience import audience_distribution_plan
 
 DEFAULT_PLATFORMS = (
     "youtube_long",
@@ -908,6 +909,8 @@ def package_story(
             "hashtags": tags,
             "keywords": platform_keywords,
             "search_readiness": discovery,
+            "audience_distribution": audience_distribution_plan(story_facts.get("audience_strategy")),
+            "media_retention_policy": story_facts.get("media_retention_policy") or {},
             "engagement_controls": engagement_plan(
                 platform, audience, story_facts.get("engagement_policy")
             ),
