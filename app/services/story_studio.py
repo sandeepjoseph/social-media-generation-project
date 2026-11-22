@@ -339,6 +339,8 @@ def _profile_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
             "packaging_defaults",
             "search_policy",
             "engagement_policy",
+            "audience_strategy",
+            "media_retention_policy",
             "brand_hashtag",
             "brand_hashtags",
             "director_template",
@@ -2427,6 +2429,8 @@ def build_platform_package(
         "engagement_policy": _prompt_safe_profile_value(
             profile.get("engagement_policy") or {}
         ),
+        "audience_strategy": _prompt_safe_profile_value(profile.get("audience_strategy") or {}),
+        "media_retention_policy": _prompt_safe_profile_value(profile.get("media_retention_policy") or {}),
         "ai_realistic_content": (human_review or {}).get("ai_realistic_content"),
         "platform_targets": list(selected_platforms),
         "platform_assets": platform_assets,
